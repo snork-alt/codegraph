@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { handleAnalyze } from './analyze';
 import { handleAsk } from './ask';
+import { handleSpecify } from './specify';
+import { handlePlan } from './plan';
 
 const PARTICIPANT_ID = 'codegraph.codegraph';
 
@@ -28,6 +30,14 @@ async function handler(
   switch (request.command) {
     case 'analyze':
       await handleAnalyze(request, stream, token);
+      break;
+
+    case 'specify':
+      await handleSpecify(request, stream, token);
+      break;
+
+    case 'plan':
+      await handlePlan(request, stream, token);
       break;
 
     default:

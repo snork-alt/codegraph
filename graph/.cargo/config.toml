@@ -19,6 +19,14 @@ rustflags = [
   "-C", "link-arg=-Wl,--export=wasm_ia_new",
   "-C", "link-arg=-Wl,--export=wasm_ia_get_request",
   "-C", "link-arg=-Wl,--export=wasm_ia_process_response",
+  "-C", "link-arg=-Wl,--export=wasm_nfpm_new",
+  "-C", "link-arg=-Wl,--export=wasm_nfpm_get_request",
+  "-C", "link-arg=-Wl,--export=wasm_nfpm_process_response",
+  "-C", "link-arg=-Wl,--export=wasm_nfpm_submit_answers",
+  "-C", "link-arg=-Wl,--export=wasm_nfa_new",
+  "-C", "link-arg=-Wl,--export=wasm_nfa_get_request",
+  "-C", "link-arg=-Wl,--export=wasm_nfa_process_response",
+  "-C", "link-arg=-Wl,--export=wasm_nfa_submit_answers",
 ]
 
 [env]

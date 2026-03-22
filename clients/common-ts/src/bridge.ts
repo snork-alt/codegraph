@@ -222,8 +222,33 @@ export async function indexGraph(
 
 /** Architect action returned by each WASM step. */
 interface ArchitectAction {
-  action:   'continue' | 'message' | 'stop' | 'error';
+  action:   'continue' | 'message' | 'questions' | 'stop' | 'error';
   content?: string;
+}
+
+// ─── New Feature shared types ─────────────────────────────────────────────────
+
+/** A clarification question produced by the NewFeatureProductManagerAgent. */
+export interface FeatureQuestion {
+  id:       string;
+  text:     string;
+  type:     'open' | 'choice';
+  choices?: string[];
+}
+
+/**
+ * Two-phase session for the NewFeatureProductManagerAgent.
+ *
+ * Phase 1 — `exploreAndGetQuestions`: agent explores the codebase and either
+ *   returns questions that need answering, or an empty array when it has
+ *   enough context to write the spec immediately.
+ *
+ * Phase 2 — `generateSpec`: submit answers (or an empty object) and receive
+ *   the complete feature spec markdown.
+ */
+export interface NewFeaturePMSession {
+  exploreAndGetQuestions(llm: ArchitectLLMClient): Promise<FeatureQuestion[]>;
+  generateSpec(answers: Record<string, string>, llm: ArchitectLLMClient): Promise<string>;
 }
 
 /**
@@ -447,4 +472,190 @@ export async function runArchitect(
         throw new Error(`Architect agent error: ${action.content ?? 'unknown'}`);
     }
   }
+}
+
+/**
+ * Create a two-phase {@link NewFeaturePMSession} for the given feature request.
+ *
+ * The WASM instance is kept alive across both phases so conversation history
+ * is preserved between exploration and spec generation.
+ *
+ * @param rootPath  Absolute path to the project root.
+ * @param feature   The feature description provided by the user.
+ * @param wasmPath  Optional override for the WASM binary location.
+ */
+export async function createNewFeaturePMSession(
+  rootPath:  string,
+  feature:   string,
+  wasmPath?: string,
+): Promise<NewFeaturePMSession> {
+  const resolvedWasm = wasmPath ?? process.env['CODEGRAPH_WASM'] ?? DEFAULT_WASM_PATH;
+  const { memory, exports } = await createWasmInstance(resolvedWasm);
+
+  const wasmResponsePtr    = exports['wasm_response_ptr']           as () => number;
+  const wasmNfpmNew        = exports['wasm_nfpm_new']               as (ptr: number, len: number) => number;
+  const wasmNfpmGetReq     = exports['wasm_nfpm_get_request']       as () => number;
+  const wasmNfpmProcess    = exports['wasm_nfpm_process_response']  as (ptr: number, len: number) => number;
+  const wasmNfpmSubmit     = exports['wasm_nfpm_submit_answers']    as (ptr: number, len: number) => number;
+
+  const payload = JSON.stringify({ root: rootPath, feature });
+  const { ptr, len } = writeToWasm(memory, exports, payload);
+  const initResult = wasmNfpmNew(ptr, len);
+  if (initResult !== 0) {
+    throw new Error(
+      `Failed to initialise NewFeatureProductManagerAgent. ` +
+      `Make sure '${rootPath}/.codegraph/graph.yml' exists (run '@codegraph /analyze' first).`,
+    );
+  }
+
+  /** Drive the agent loop until a non-continue action is returned. */
+  async function driveLoop(llm: ArchitectLLMClient): Promise<ArchitectAction> {
+    for (;;) {
+      const reqLen = wasmNfpmGetReq();
+      if (reqLen === 0) throw new Error('NFPM agent returned empty request — this is a bug.');
+      const reqJson      = readString(memory, wasmResponsePtr(), reqLen);
+      const responseJson = await llm(reqJson);
+      const { ptr: rPtr, len: rLen } = writeToWasm(memory, exports, responseJson);
+      const actionLen    = wasmNfpmProcess(rPtr, rLen);
+      const action: ArchitectAction = JSON.parse(readString(memory, wasmResponsePtr(), actionLen));
+
+      if (action.action === 'continue') continue;
+      return action;
+    }
+  }
+
+  // Shared state between the two phases.
+  let pendingSpec: string | undefined;
+
+  return {
+    async exploreAndGetQuestions(llm): Promise<FeatureQuestion[]> {
+      const action = await driveLoop(llm);
+      if (action.action === 'questions') {
+        try {
+          const parsed = JSON.parse(action.content ?? '{}') as { questions?: FeatureQuestion[] };
+          return parsed.questions ?? [];
+        } catch {
+          return [];
+        }
+      }
+      if (action.action === 'message') {
+        // Agent skipped questions — cache spec for generateSpec.
+        pendingSpec = action.content ?? '';
+        return [];
+      }
+      if (action.action === 'stop') return [];
+      throw new Error(`NFPM agent error: ${action.content ?? 'unknown'}`);
+    },
+
+    async generateSpec(answers, llm): Promise<string> {
+      // If the agent produced the spec directly (no questions), return it now.
+      if (pendingSpec !== undefined) return pendingSpec;
+
+      // Submit answers then drive to spec.
+      const answersJson = JSON.stringify(answers);
+      const { ptr: aPtr, len: aLen } = writeToWasm(memory, exports, answersJson);
+      wasmNfpmSubmit(aPtr, aLen);
+
+      const action = await driveLoop(llm);
+      if (action.action === 'message') return action.content ?? '';
+      if (action.action === 'stop')    return '';
+      throw new Error(`NFPM agent error: ${action.content ?? 'unknown'}`);
+    },
+  };
+}
+
+// ─── New Feature Architect session ───────────────────────────────────────────
+
+/**
+ * Two-phase session for the NewFeatureArchitectAgent.
+ *
+ * Phase 1 — `exploreAndGetQuestions`: agent reads the feature spec and
+ *   explores the codebase, then returns clarification questions or an empty
+ *   array when it can proceed directly to the plan.
+ *
+ * Phase 2 — `generatePlan`: submit answers and receive the plan markdown.
+ */
+export interface NewFeatureArchitectSession {
+  exploreAndGetQuestions(llm: ArchitectLLMClient): Promise<FeatureQuestion[]>;
+  generatePlan(answers: Record<string, string>, llm: ArchitectLLMClient): Promise<string>;
+}
+
+/**
+ * Create a two-phase {@link NewFeatureArchitectSession}.
+ *
+ * @param rootPath    Absolute path to the project root.
+ * @param featurePath Absolute path to the feature directory
+ *                    (e.g. `/project/.codegraph/features/001-add-python-support`).
+ * @param wasmPath    Optional override for the WASM binary location.
+ */
+export async function createNewFeatureArchitectSession(
+  rootPath:    string,
+  featurePath: string,
+  wasmPath?:   string,
+): Promise<NewFeatureArchitectSession> {
+  const resolvedWasm = wasmPath ?? process.env['CODEGRAPH_WASM'] ?? DEFAULT_WASM_PATH;
+  const { memory, exports } = await createWasmInstance(resolvedWasm);
+
+  const wasmResponsePtr  = exports['wasm_response_ptr']          as () => number;
+  const wasmNfaNew       = exports['wasm_nfa_new']               as (ptr: number, len: number) => number;
+  const wasmNfaGetReq    = exports['wasm_nfa_get_request']       as () => number;
+  const wasmNfaProcess   = exports['wasm_nfa_process_response']  as (ptr: number, len: number) => number;
+  const wasmNfaSubmit    = exports['wasm_nfa_submit_answers']    as (ptr: number, len: number) => number;
+
+  const payload = JSON.stringify({ root: rootPath, feature_path: featurePath });
+  const { ptr, len } = writeToWasm(memory, exports, payload);
+  const initResult = wasmNfaNew(ptr, len);
+  if (initResult !== 0) {
+    throw new Error(
+      `Failed to initialise NewFeatureArchitectAgent. ` +
+      `Make sure '${rootPath}/.codegraph/graph.yml' exists and '${featurePath}/specs.md' is present.`,
+    );
+  }
+
+  async function driveLoop(llm: ArchitectLLMClient): Promise<ArchitectAction> {
+    for (;;) {
+      const reqLen = wasmNfaGetReq();
+      if (reqLen === 0) throw new Error('NFA agent returned empty request — this is a bug.');
+      const reqJson      = readString(memory, wasmResponsePtr(), reqLen);
+      const responseJson = await llm(reqJson);
+      const { ptr: rPtr, len: rLen } = writeToWasm(memory, exports, responseJson);
+      const actionLen    = wasmNfaProcess(rPtr, rLen);
+      const action: ArchitectAction = JSON.parse(readString(memory, wasmResponsePtr(), actionLen));
+      if (action.action === 'continue') continue;
+      return action;
+    }
+  }
+
+  let pendingPlan: string | undefined;
+
+  return {
+    async exploreAndGetQuestions(llm): Promise<FeatureQuestion[]> {
+      const action = await driveLoop(llm);
+      if (action.action === 'questions') {
+        try {
+          const parsed = JSON.parse(action.content ?? '{}') as { questions?: FeatureQuestion[] };
+          return parsed.questions ?? [];
+        } catch {
+          return [];
+        }
+      }
+      if (action.action === 'message') {
+        pendingPlan = action.content ?? '';
+        return [];
+      }
+      if (action.action === 'stop') return [];
+      throw new Error(`NFA agent error: ${action.content ?? 'unknown'}`);
+    },
+
+    async generatePlan(answers, llm): Promise<string> {
+      if (pendingPlan !== undefined) return pendingPlan;
+      const answersJson = JSON.stringify(answers);
+      const { ptr: aPtr, len: aLen } = writeToWasm(memory, exports, answersJson);
+      wasmNfaSubmit(aPtr, aLen);
+      const action = await driveLoop(llm);
+      if (action.action === 'message') return action.content ?? '';
+      if (action.action === 'stop')    return '';
+      throw new Error(`NFA agent error: ${action.content ?? 'unknown'}`);
+    },
+  };
 }

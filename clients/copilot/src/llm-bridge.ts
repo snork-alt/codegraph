@@ -106,8 +106,9 @@ function toVsCodeTools(tools: OAITool[]): vscode.LanguageModelChatTool[] {
 // ─── Response collection ──────────────────────────────────────────────────────
 
 async function collectResponse(
-  response: vscode.LanguageModelChatResponse,
-  onText?:  (fragment: string) => void,
+  response:    vscode.LanguageModelChatResponse,
+  onToolCall?: OnToolCall,
+  onText?:     (fragment: string) => void,
 ): Promise<{ text: string; toolCalls: OAIToolCall[] }> {
   let text = '';
   const toolCalls: OAIToolCall[] = [];
@@ -117,14 +118,26 @@ async function collectResponse(
       text += part.value;
       onText?.(part.value);
     } else if (part instanceof vscode.LanguageModelToolCallPart) {
-      toolCalls.push({
+      const tc: OAIToolCall = {
         id:   part.callId,
         type: 'function',
         function: {
           name:      part.name,
           arguments: JSON.stringify(part.input),
         },
-      });
+      };
+      toolCalls.push(tc);
+
+      // Fire immediately so action details appear in the chat as each tool
+      // call arrives, not batched at the end of the full response.
+      if (onToolCall) {
+        let details = '';
+        try {
+          const args = part.input as Record<string, unknown>;
+          details = typeof args['__actionDetails__'] === 'string' ? args['__actionDetails__'] : '';
+        } catch { /* ignore */ }
+        onToolCall(part.name, details);
+      }
     }
   }
 
@@ -134,6 +147,17 @@ async function collectResponse(
   if (toolCalls.length === 0 && text.includes('<function=')) {
     const parsed = parseTextToolCalls(text);
     if (parsed.toolCalls.length > 0) {
+      // Fire onToolCall for text-parsed tool calls too.
+      if (onToolCall) {
+        for (const tc of parsed.toolCalls) {
+          let details = '';
+          try {
+            const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
+            details = typeof args['__actionDetails__'] === 'string' ? args['__actionDetails__'] : '';
+          } catch { /* ignore */ }
+          onToolCall(tc.function.name, details);
+        }
+      }
       return { text: parsed.remainingText, toolCalls: parsed.toolCalls };
     }
   }
@@ -237,19 +261,7 @@ export function createCopilotLLMClient(
       throw err;
     }
 
-    const { text, toolCalls } = await collectResponse(response, onText);
-
-    // Fire onToolCall for each tool call so callers can update progress UI.
-    if (onToolCall) {
-      for (const tc of toolCalls) {
-        let details = '';
-        try {
-          const args = JSON.parse(tc.function.arguments) as Record<string, unknown>;
-          details = typeof args['__actionDetails__'] === 'string' ? args['__actionDetails__'] : '';
-        } catch { /* ignore */ }
-        onToolCall(tc.function.name, details);
-      }
-    }
+    const { text, toolCalls } = await collectResponse(response, onToolCall, onText);
 
     // Return an OpenAI-format completion that the WASM agent can parse.
     return JSON.stringify({

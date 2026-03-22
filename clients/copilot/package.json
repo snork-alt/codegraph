@@ -35,6 +35,14 @@
           {
             "name": "analyze",
             "description": "Index the workspace, generate architecture.md and specs.md"
+          },
+          {
+            "name": "specify",
+            "description": "Analyse a feature request and generate a feature specification"
+          },
+          {
+            "name": "plan",
+            "description": "Generate a technical implementation plan for a feature"
           }
         ]
       }

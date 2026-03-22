@@ -34,6 +34,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use graph::agent::interactive_architect::InteractiveArchitectAgent;
+use graph::agent::new_feature_architect::NewFeatureArchitectAgent;
+use graph::agent::new_feature_pm::NewFeatureProductManagerAgent;
 use graph::agent::product_manager::ProductManagerAgent;
 use graph::agent::software_architect::SoftwareArchitectAgent;
 use graph::filesystem::{FileSystem, FsEntry};
@@ -89,6 +91,12 @@ thread_local! {
     /// Holds the running [`InteractiveArchitectAgent`] between `wasm_ia_new`
     /// and successive `wasm_ia_process_response` calls.
     static CURRENT_IA: RefCell<Option<InteractiveArchitectAgent>> = const { RefCell::new(None) };
+
+    /// Holds the running [`NewFeatureProductManagerAgent`] across both phases.
+    static CURRENT_NFPM: RefCell<Option<NewFeatureProductManagerAgent>> = const { RefCell::new(None) };
+
+    /// Holds the running [`NewFeatureArchitectAgent`] across both phases.
+    static CURRENT_NFA: RefCell<Option<NewFeatureArchitectAgent>> = const { RefCell::new(None) };
 }
 
 /// Called by the host to allocate (or reuse) a buffer of `size` bytes inside
@@ -512,4 +520,215 @@ pub extern "C" fn wasm_pm_process_response(ptr: *const u8, len: u32) -> u32 {
         }
     }
     write_wasm_response(action_json.as_bytes())
+}
+
+// ─── New Feature Product Manager reactor exports ──────────────────────────────
+
+/// Initialise a [`NewFeatureProductManagerAgent`].
+///
+/// TypeScript writes JSON `{"root":"…","feature":"…"}` into the buffer first.
+/// Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfpm_new(ptr: *const u8, len: u32) -> i32 {
+    #[derive(serde::Deserialize)]
+    struct Params { root: String, feature: String }
+
+    let json = read_wasm_string(ptr, len);
+    let params: Params = match serde_json::from_str(&json) {
+        Ok(p)  => p,
+        Err(_) => return -1,
+    };
+
+    let graph_path = format!("{}/.codegraph/graph.yml", params.root);
+    let yaml = match HostFileSystem.read(&graph_path) {
+        Some(y) => y,
+        None    => return -1,
+    };
+    let graph = match GraphSerializer::deserialize(&yaml) {
+        Ok(g)  => g,
+        Err(_) => return -1,
+    };
+
+    let agent = NewFeatureProductManagerAgent::new(
+        graph,
+        params.root,
+        params.feature,
+        Box::new(HostFileSystem),
+    );
+    CURRENT_NFPM.with(|cell| *cell.borrow_mut() = Some(agent));
+    0
+}
+
+/// Returns the byte length of the NFPM request JSON (0 if no agent active).
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfpm_get_request() -> u32 {
+    let json = CURRENT_NFPM.with(|cell| {
+        cell.borrow().as_ref().map(|a| a.get_request()).unwrap_or_default()
+    });
+    if json.is_empty() { return 0; }
+    write_wasm_response(json.as_bytes())
+}
+
+/// Feed the LLM response to the NFPM agent.
+///
+/// Action JSON format:
+///   {"action":"continue"}                         — tool calls executed
+///   {"action":"questions","content":"[…]"}        — questions JSON array
+///   {"action":"message",  "content":"…markdown…"} — feature spec (no file written here)
+///   {"action":"stop"}
+///   {"action":"error","content":"…"}
+///
+/// Note: the spec file is written by TypeScript (it needs to determine the path).
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfpm_process_response(ptr: *const u8, len: u32) -> u32 {
+    use graph::agent::llm_agent::AgentAction;
+    let response = read_wasm_string(ptr, len);
+    let action_json = CURRENT_NFPM.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        match borrow.as_mut() {
+            None        => r#"{"action":"error","content":"no active nfpm agent"}"#.to_owned(),
+            Some(agent) => match agent.process_response(&response) {
+                AgentAction::Continue => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::Stop     => r#"{"action":"stop"}"#.to_owned(),
+                AgentAction::Error(e) => {
+                    let msg = serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_owned());
+                    format!(r#"{{"action":"error","content":{}}}"#, msg)
+                }
+                AgentAction::AssistantMessage(content) => {
+                    let trimmed = content.trim();
+                    // Detect questions JSON vs final spec markdown.
+                    if trimmed.starts_with(r#"{"questions":"#) || trimmed.starts_with(r#"{ "questions":"#) {
+                        let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
+                        format!(r#"{{"action":"questions","content":{}}}"#, json)
+                    } else {
+                        let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
+                        format!(r#"{{"action":"message","content":{}}}"#, json)
+                    }
+                }
+            },
+        }
+    });
+    write_wasm_response(action_json.as_bytes())
+}
+
+/// Inject the user's answers as a new user message and prepare for phase 2.
+///
+/// TypeScript writes the answers JSON string into the buffer.
+/// The agent appends a user message with the answers so the next
+/// `wasm_nfpm_get_request` + LLM call generates the feature spec.
+///
+/// Returns 0 on success, -1 if no agent is active.
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfpm_submit_answers(ptr: *const u8, len: u32) -> i32 {
+    let answers = read_wasm_string(ptr, len);
+    CURRENT_NFPM.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        match borrow.as_mut() {
+            None        => -1,
+            Some(agent) => { agent.submit_answers(&answers); 0 }
+        }
+    })
+}
+
+// ─── New Feature Architect reactor exports ────────────────────────────────────
+
+/// Initialise a [`NewFeatureArchitectAgent`].
+///
+/// TypeScript writes JSON `{"root":"…","feature_path":"…"}` into the buffer.
+/// `feature_path` is the absolute path to the feature directory
+/// (e.g. `/project/.codegraph/features/001-add-python-support`).
+///
+/// Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfa_new(ptr: *const u8, len: u32) -> i32 {
+    #[derive(serde::Deserialize)]
+    struct Params { root: String, feature_path: String }
+
+    let json = read_wasm_string(ptr, len);
+    let params: Params = match serde_json::from_str(&json) {
+        Ok(p)  => p,
+        Err(_) => return -1,
+    };
+
+    let graph_path = format!("{}/.codegraph/graph.yml", params.root);
+    let yaml = match HostFileSystem.read(&graph_path) {
+        Some(y) => y,
+        None    => return -1,
+    };
+    let graph = match GraphSerializer::deserialize(&yaml) {
+        Ok(g)  => g,
+        Err(_) => return -1,
+    };
+
+    let agent = NewFeatureArchitectAgent::new(
+        graph,
+        params.root,
+        params.feature_path,
+        Box::new(HostFileSystem),
+    );
+    CURRENT_NFA.with(|cell| *cell.borrow_mut() = Some(agent));
+    0
+}
+
+/// Returns the byte length of the NFA request JSON (0 if no agent active).
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfa_get_request() -> u32 {
+    let json = CURRENT_NFA.with(|cell| {
+        cell.borrow().as_ref().map(|a| a.get_request()).unwrap_or_default()
+    });
+    if json.is_empty() { return 0; }
+    write_wasm_response(json.as_bytes())
+}
+
+/// Feed the LLM response to the NFA agent.
+///
+/// Actions:
+///   {"action":"continue"}
+///   {"action":"questions","content":"[…]"}
+///   {"action":"message","content":"…markdown…"}  — plan ready, TypeScript writes plan.md
+///   {"action":"stop"}
+///   {"action":"error","content":"…"}
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfa_process_response(ptr: *const u8, len: u32) -> u32 {
+    use graph::agent::llm_agent::AgentAction;
+    let response = read_wasm_string(ptr, len);
+    let action_json = CURRENT_NFA.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        match borrow.as_mut() {
+            None        => r#"{"action":"error","content":"no active nfa agent"}"#.to_owned(),
+            Some(agent) => match agent.process_response(&response) {
+                AgentAction::Continue => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::Stop     => r#"{"action":"stop"}"#.to_owned(),
+                AgentAction::Error(e) => {
+                    let msg = serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_owned());
+                    format!(r#"{{"action":"error","content":{}}}"#, msg)
+                }
+                AgentAction::AssistantMessage(content) => {
+                    let trimmed = content.trim();
+                    if trimmed.starts_with(r#"{"questions":"#) || trimmed.starts_with(r#"{ "questions":"#) {
+                        let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
+                        format!(r#"{{"action":"questions","content":{}}}"#, json)
+                    } else {
+                        let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
+                        format!(r#"{{"action":"message","content":{}}}"#, json)
+                    }
+                }
+            },
+        }
+    });
+    write_wasm_response(action_json.as_bytes())
+}
+
+/// Inject the developer's answers and prepare for plan generation.
+/// Returns 0 on success, -1 if no agent is active.
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfa_submit_answers(ptr: *const u8, len: u32) -> i32 {
+    let answers = read_wasm_string(ptr, len);
+    CURRENT_NFA.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        match borrow.as_mut() {
+            None        => -1,
+            Some(agent) => { agent.submit_answers(&answers); 0 }
+        }
+    })
 }
