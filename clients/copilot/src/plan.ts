@@ -103,7 +103,6 @@ export async function handlePlan(
   const planLLM = createCopilotLLMClient(
     request.model, token,
     (_tool, details) => { if (details) stream.markdown(`- ${details}\n`); },
-    (fragment) => stream.markdown(fragment),
   );
 
   let plan: string;

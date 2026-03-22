@@ -89,7 +89,6 @@ export async function handleSpecify(
   const specLLM = createCopilotLLMClient(
     request.model, token,
     (_tool, details) => { if (details) stream.markdown(`- ${details}\n`); },
-    (fragment) => stream.markdown(fragment),
   );
 
   let spec: string;

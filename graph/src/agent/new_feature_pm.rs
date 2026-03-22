@@ -6,7 +6,7 @@ use serde_json::json;
 use crate::agent::graph_tools::register_graph_tools;
 use crate::agent::llm_agent::{AgentAction, LLMAgent};
 use crate::agent::memory::Message;
-use crate::agent::tools::{ToolDefinition, ToolsManager};
+use crate::agent::tools::{ToolDefinition, ToolParameter, ParamKind, ToolsManager};
 use crate::filesystem::FileSystem;
 use crate::graph::DependencyGraph;
 
@@ -24,16 +24,12 @@ Explore the codebase to understand how the requested feature fits the project:
 2. Use graph tools to find relevant modules, entry points, data models, and dependencies.
 3. Call multiple independent tools in a single response.
 
-After exploration, if you need clarification from the user, respond with ONLY this JSON
-(no markdown, no preamble, no other text whatsoever):
-{"questions":[{"id":"q1","text":"...","type":"open"},{"id":"q2","text":"...","type":"choice","choices":["A","B"]}]}
-
-Rules for questions:
-- Maximum 6 questions total.
+After exploration, you MUST call the `ask_questions` tool with 3–6 clarification questions
+before writing the specification. Never skip this step.
 - type "open"   → free-text answer.
-- type "choice" → user picks exactly one of the provided choices (at least 2 choices required).
-- Only ask questions that would meaningfully change the specification.
-- If the feature is clear enough without clarification, skip to Phase 2 directly.
+- type "select" → user picks exactly one of the provided choices.
+- type "multi"  → user picks one or more of the provided choices.
+- Ask questions that will meaningfully shape the specification: scope, target users, priorities, edge cases.
 
 ── Phase 2: Specification ────────────────────────────────────────────────────
 Write a complete feature specification in Markdown written for a PRODUCT audience,
@@ -152,6 +148,41 @@ impl NewFeatureProductManagerAgent {
             );
         }
 
+        // ── ask_questions ─────────────────────────────────────────────────────
+        tools.register(
+            ToolDefinition {
+                name:        "ask_questions".into(),
+                description: "Ask the user clarification questions before writing the feature \
+                              specification. Call this ONCE after completing exploration, with \
+                              3–6 questions.".into(),
+                parameters:  vec![
+                    ToolParameter {
+                        name:        "questions".into(),
+                        kind:        ParamKind::Schema(serde_json::json!({
+                            "type": "array",
+                            "description": "3 to 6 clarification questions.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id":      { "type": "string", "description": "Unique ID, e.g. q1, q2." },
+                                    "text":    { "type": "string", "description": "The question text." },
+                                    "type":    { "type": "string", "enum": ["open", "select", "multi"],
+                                                 "description": "open = free-text; select = pick one; multi = pick one or more." },
+                                    "choices": { "type": "array", "items": { "type": "string" },
+                                                 "description": "Required when type=choice. Provide at least 2 options." }
+                                },
+                                "required": ["id", "text", "type", "choices"],
+                                "additionalProperties": false
+                            }
+                        })),
+                        description: "3 to 6 clarification questions.".into(),
+                        required:    true,
+                    },
+                ],
+            },
+            |_args| "Questions received.".to_owned(),
+        );
+
         // Register shared graph exploration tools.
         register_graph_tools(&mut tools, Arc::new(graph), fs_rc);
 
@@ -159,8 +190,7 @@ impl NewFeatureProductManagerAgent {
             "Project at `{root}` ({file_count} source files, {node_count} nodes).\n\n\
              Feature request: {feature}\n\n\
              Explore the codebase to understand how this feature fits the project, \
-             then either ask clarification questions (as JSON) or generate the \
-             feature specification directly.",
+             then call `ask_questions` with 3–6 clarification questions.",
         );
 
         Self {

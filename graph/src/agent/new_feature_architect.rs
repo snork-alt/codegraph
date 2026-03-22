@@ -27,13 +27,12 @@ CRITICAL RULE — you MUST include `__actionDetails__` on every tool call, no ex
    - Use `get_file_source` when you need to understand a specific implementation.
 4. Call multiple independent tools in a single response.
 
-After exploration, if you need clarification from the developer (max 6 questions):
-Respond with ONLY this JSON (no other text):
-{"questions":[{"id":"q1","text":"...","type":"open"},{"id":"q2","text":"...","type":"choice","choices":["A","B"]}]}
-
-type "open"   → free-text answer.
-type "choice" → developer picks one of the provided choices.
-Only ask questions that would meaningfully change the implementation plan.
+After exploration, you MUST call the `ask_questions` tool with 3–6 clarification questions
+before writing the plan. Never skip this step.
+- type "open"   → free-text answer.
+- type "select" → developer picks exactly one of the provided choices.
+- type "multi"  → developer picks one or more of the provided choices.
+- Ask questions that will meaningfully shape the plan: approach choices, constraints, priorities, trade-offs.
 
 ── Phase 2: Implementation Plan ──────────────────────────────────────────────
 Write a detailed technical implementation plan in Markdown.
@@ -183,6 +182,41 @@ impl NewFeatureArchitectAgent {
             );
         }
 
+        // ── ask_questions ─────────────────────────────────────────────────────
+        tools.register(
+            ToolDefinition {
+                name:        "ask_questions".into(),
+                description: "Ask the developer clarification questions before writing the \
+                              implementation plan. Call this ONCE after completing exploration, \
+                              with 3–6 questions.".into(),
+                parameters:  vec![
+                    ToolParameter {
+                        name:        "questions".into(),
+                        kind:        ParamKind::Schema(serde_json::json!({
+                            "type": "array",
+                            "description": "3 to 6 clarification questions.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id":      { "type": "string", "description": "Unique ID, e.g. q1, q2." },
+                                    "text":    { "type": "string", "description": "The question text." },
+                                    "type":    { "type": "string", "enum": ["open", "select", "multi"],
+                                                 "description": "open = free-text; select = pick one; multi = pick one or more." },
+                                    "choices": { "type": "array", "items": { "type": "string" },
+                                                 "description": "Required when type=select or type=multi. Provide at least 2 options." }
+                                },
+                                "required": ["id", "text", "type", "choices"],
+                                "additionalProperties": false
+                            }
+                        })),
+                        description: "3 to 6 clarification questions.".into(),
+                        required:    true,
+                    },
+                ],
+            },
+            |_args| "Questions received.".to_owned(),
+        );
+
         // Register all shared graph exploration tools.
         register_graph_tools(&mut tools, Arc::new(graph), fs_rc);
 
@@ -191,7 +225,7 @@ impl NewFeatureArchitectAgent {
              Feature path: `{feature_path}`\n\n\
              Start by calling `read_feature_spec` to read the product specification, \
              then explore the codebase to understand what needs to change. \
-             Produce a detailed technical implementation plan.",
+             Then call `ask_questions` with 3–6 clarification questions.",
         );
 
         Self {

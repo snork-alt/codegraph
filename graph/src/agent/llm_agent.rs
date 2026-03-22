@@ -12,6 +12,10 @@ pub enum AgentAction {
     Continue,
     /// The agent produced a final text response.  Save it and stop.
     AssistantMessage(String),
+    /// The agent called the `ask_questions` tool.  The payload is the raw JSON
+    /// arguments string (contains a `questions` array).  The loop should stop
+    /// and surface the questions to the user.
+    AskQuestions(String),
     /// The LLM stopped without content (e.g. empty stop).
     Stop,
     /// A fatal error occurred; the string describes what went wrong.
@@ -175,6 +179,29 @@ impl LLMAgent {
                         "finish_reason=tool_calls but no tool_calls in message".into(),
                     ),
                 };
+
+                // Intercept `ask_questions` before any tools are executed.
+                // The model uses this tool to signal it wants clarification
+                // rather than text-heuristic detection.
+                if let Some(aq) = raw_calls.iter().find(|tc| tc.function.name == "ask_questions") {
+                    let args = aq.function.arguments.clone();
+
+                    // Record the assistant's tool-call in history so that when
+                    // phase 2 starts the model can see what it asked.
+                    let tool_calls: Vec<ToolCall> = raw_calls.iter().map(|tc| ToolCall {
+                        id:        tc.id.clone(),
+                        name:      tc.function.name.clone(),
+                        arguments: tc.function.arguments.clone(),
+                    }).collect();
+                    self.messages.push(Message {
+                        role:         Role::Assistant,
+                        content:      choice.message.content,
+                        tool_calls,
+                        tool_call_id: None,
+                    });
+
+                    return AgentAction::AskQuestions(args);
+                }
 
                 // Append the assistant message (with tool_calls) to history.
                 let tool_calls: Vec<ToolCall> = raw_calls.iter().map(|tc| ToolCall {

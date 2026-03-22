@@ -12,15 +12,20 @@ pub enum ParamKind {
     Number,
     Boolean,
     Array,
+    /// Arbitrary JSON Schema fragment — used when the type cannot be expressed
+    /// with the above variants (e.g. array-of-objects).
+    #[serde(rename = "schema")]
+    Schema(Value),
 }
 
 impl ParamKind {
     fn as_json_type(&self) -> &'static str {
         match self {
-            ParamKind::String  => "string",
-            ParamKind::Number  => "number",
-            ParamKind::Boolean => "boolean",
-            ParamKind::Array   => "array",
+            ParamKind::String     => "string",
+            ParamKind::Number     => "number",
+            ParamKind::Boolean    => "boolean",
+            ParamKind::Array      => "array",
+            ParamKind::Schema(_)  => "object", // overridden below
         }
     }
 }
@@ -49,10 +54,21 @@ impl ToolDefinition {
         let mut required_keys: Vec<Value> = Vec::new();
 
         for p in &self.parameters {
-            properties.insert(p.name.clone(), json!({
-                "type":        p.kind.as_json_type(),
-                "description": p.description,
-            }));
+            let prop = if let ParamKind::Schema(schema) = &p.kind {
+                // Raw schema — use as-is, inject description if missing.
+                let mut obj = schema.clone();
+                if let Value::Object(ref mut m) = obj {
+                    m.entry("description")
+                        .or_insert_with(|| Value::String(p.description.clone()));
+                }
+                obj
+            } else {
+                json!({
+                    "type":        p.kind.as_json_type(),
+                    "description": p.description,
+                })
+            };
+            properties.insert(p.name.clone(), prop);
             if p.required {
                 required_keys.push(Value::String(p.name.clone()));
             }

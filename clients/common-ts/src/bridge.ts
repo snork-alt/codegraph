@@ -228,11 +228,12 @@ interface ArchitectAction {
 
 // ─── New Feature shared types ─────────────────────────────────────────────────
 
-/** A clarification question produced by the NewFeatureProductManagerAgent. */
+/** A clarification question produced by the NewFeatureProductManagerAgent or NewFeatureArchitectAgent. */
 export interface FeatureQuestion {
   id:       string;
   text:     string;
-  type:     'open' | 'choice';
+  /** open = free-text; select = pick one; multi = pick one or more */
+  type:     'open' | 'select' | 'multi';
   choices?: string[];
 }
 
@@ -532,8 +533,14 @@ export async function createNewFeaturePMSession(
       const action = await driveLoop(llm);
       if (action.action === 'questions') {
         try {
-          const parsed = JSON.parse(action.content ?? '{}') as { questions?: FeatureQuestion[] };
-          return parsed.questions ?? [];
+          // content is the raw ask_questions tool arguments JSON:
+          // { "__actionDetails__": "...", "questions": [...] }
+          const parsed = JSON.parse(action.content ?? '{}') as { questions?: FeatureQuestion[] | string };
+          let questions = parsed.questions ?? [];
+          if (typeof questions === 'string') {
+            try { questions = JSON.parse(questions) as FeatureQuestion[]; } catch { questions = []; }
+          }
+          return Array.isArray(questions) ? questions : [];
         } catch {
           return [];
         }
@@ -557,8 +564,11 @@ export async function createNewFeaturePMSession(
       wasmNfpmSubmit(aPtr, aLen);
 
       const action = await driveLoop(llm);
-      if (action.action === 'message') return action.content ?? '';
-      if (action.action === 'stop')    return '';
+      if (action.action === 'message')   return action.content ?? '';
+      if (action.action === 'stop')      return '';
+      // 'questions' in phase 2 means the agent re-asked questions after answers
+      // were submitted — treat as empty to avoid leaking JSON into chat.
+      if (action.action === 'questions') return '';
       throw new Error(`NFPM agent error: ${action.content ?? 'unknown'}`);
     },
   };
@@ -633,8 +643,14 @@ export async function createNewFeatureArchitectSession(
       const action = await driveLoop(llm);
       if (action.action === 'questions') {
         try {
-          const parsed = JSON.parse(action.content ?? '{}') as { questions?: FeatureQuestion[] };
-          return parsed.questions ?? [];
+          // content is the raw ask_questions tool arguments JSON:
+          // { "__actionDetails__": "...", "questions": [...] }
+          const parsed = JSON.parse(action.content ?? '{}') as { questions?: FeatureQuestion[] | string };
+          let questions = parsed.questions ?? [];
+          if (typeof questions === 'string') {
+            try { questions = JSON.parse(questions) as FeatureQuestion[]; } catch { questions = []; }
+          }
+          return Array.isArray(questions) ? questions : [];
         } catch {
           return [];
         }
@@ -653,8 +669,9 @@ export async function createNewFeatureArchitectSession(
       const { ptr: aPtr, len: aLen } = writeToWasm(memory, exports, answersJson);
       wasmNfaSubmit(aPtr, aLen);
       const action = await driveLoop(llm);
-      if (action.action === 'message') return action.content ?? '';
-      if (action.action === 'stop')    return '';
+      if (action.action === 'message')   return action.content ?? '';
+      if (action.action === 'stop')      return '';
+      if (action.action === 'questions') return '';
       throw new Error(`NFA agent error: ${action.content ?? 'unknown'}`);
     },
   };

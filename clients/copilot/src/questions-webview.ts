@@ -35,10 +35,16 @@ export function showQuestionsPanel(
 
 function buildHtml(feature: string, questions: FeatureQuestion[]): string {
   const questionsHtml = questions.map((q, i) => {
-    const inputHtml = q.type === 'choice' && q.choices?.length
+    const inputHtml = q.type === 'select' && q.choices?.length
       ? q.choices.map(c => `
           <label class="choice-label">
             <input type="radio" name="${esc(q.id)}" value="${esc(c)}" required />
+            ${esc(c)}
+          </label>`).join('\n')
+      : q.type === 'multi' && q.choices?.length
+      ? q.choices.map(c => `
+          <label class="choice-label">
+            <input type="checkbox" name="${esc(q.id)}" value="${esc(c)}" />
             ${esc(c)}
           </label>`).join('\n')
       : `<textarea name="${esc(q.id)}" rows="3" placeholder="Your answer…" required></textarea>`;
@@ -154,8 +160,10 @@ function buildHtml(feature: string, questions: FeatureQuestion[]): string {
       e.preventDefault();
       const data = new FormData(e.target);
       const answers = {};
-      for (const [key, value] of data.entries()) {
-        answers[key] = value;
+      // Collect all values per key so multi-checkboxes join as comma-separated.
+      for (const key of new Set(data.keys())) {
+        const vals = data.getAll(key);
+        answers[key] = vals.length === 1 ? vals[0] : vals.join(', ');
       }
       vscode.postMessage({ type: 'submit', answers });
     });

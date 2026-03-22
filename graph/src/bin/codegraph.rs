@@ -335,7 +335,8 @@ pub extern "C" fn wasm_architect_process_response(ptr: *const u8, len: u32) -> u
         match borrow.as_mut() {
             None        => r#"{"action":"error","content":"no active architect agent"}"#.to_owned(),
             Some(agent) => match agent.process_response(&response) {
-                AgentAction::Continue => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::Continue          => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::AskQuestions(_)   => r#"{"action":"stop"}"#.to_owned(),
                 AgentAction::Stop     => r#"{"action":"stop"}"#.to_owned(),
                 AgentAction::Error(e) => {
                     let msg = serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_owned());
@@ -439,6 +440,7 @@ pub extern "C" fn wasm_ia_process_response(ptr: *const u8, len: u32) -> u32 {
             None        => r#"{"action":"error","content":"no active interactive architect"}"#.to_owned(),
             Some(agent) => match agent.process_response(&response) {
                 AgentAction::Continue            => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::AskQuestions(_)     => r#"{"action":"stop"}"#.to_owned(),
                 AgentAction::Stop                => r#"{"action":"stop"}"#.to_owned(),
                 AgentAction::Error(e)            => {
                     let msg = serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_owned());
@@ -497,7 +499,8 @@ pub extern "C" fn wasm_pm_process_response(ptr: *const u8, len: u32) -> u32 {
         match borrow.as_mut() {
             None        => r#"{"action":"error","content":"no active product manager agent"}"#.to_owned(),
             Some(agent) => match agent.process_response(&response) {
-                AgentAction::Continue => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::Continue          => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::AskQuestions(_)   => r#"{"action":"stop"}"#.to_owned(),
                 AgentAction::Stop     => r#"{"action":"stop"}"#.to_owned(),
                 AgentAction::Error(e) => {
                     let msg = serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_owned());
@@ -592,22 +595,20 @@ pub extern "C" fn wasm_nfpm_process_response(ptr: *const u8, len: u32) -> u32 {
         match borrow.as_mut() {
             None        => r#"{"action":"error","content":"no active nfpm agent"}"#.to_owned(),
             Some(agent) => match agent.process_response(&response) {
-                AgentAction::Continue => r#"{"action":"continue"}"#.to_owned(),
-                AgentAction::Stop     => r#"{"action":"stop"}"#.to_owned(),
+                AgentAction::Continue          => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::Stop              => r#"{"action":"stop"}"#.to_owned(),
+                AgentAction::AskQuestions(args) => {
+                    // args is the raw JSON arguments from the ask_questions tool call.
+                    let json = serde_json::to_string(&args).unwrap_or_else(|_| r#""""#.to_owned());
+                    format!(r#"{{"action":"questions","content":{}}}"#, json)
+                }
                 AgentAction::Error(e) => {
                     let msg = serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_owned());
                     format!(r#"{{"action":"error","content":{}}}"#, msg)
                 }
                 AgentAction::AssistantMessage(content) => {
-                    let trimmed = content.trim();
-                    // Detect questions JSON vs final spec markdown.
-                    if trimmed.starts_with(r#"{"questions":"#) || trimmed.starts_with(r#"{ "questions":"#) {
-                        let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
-                        format!(r#"{{"action":"questions","content":{}}}"#, json)
-                    } else {
-                        let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
-                        format!(r#"{{"action":"message","content":{}}}"#, json)
-                    }
+                    let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
+                    format!(r#"{{"action":"message","content":{}}}"#, json)
                 }
             },
         }
@@ -701,21 +702,19 @@ pub extern "C" fn wasm_nfa_process_response(ptr: *const u8, len: u32) -> u32 {
         match borrow.as_mut() {
             None        => r#"{"action":"error","content":"no active nfa agent"}"#.to_owned(),
             Some(agent) => match agent.process_response(&response) {
-                AgentAction::Continue => r#"{"action":"continue"}"#.to_owned(),
-                AgentAction::Stop     => r#"{"action":"stop"}"#.to_owned(),
+                AgentAction::Continue           => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::Stop               => r#"{"action":"stop"}"#.to_owned(),
+                AgentAction::AskQuestions(args) => {
+                    let json = serde_json::to_string(&args).unwrap_or_else(|_| r#""""#.to_owned());
+                    format!(r#"{{"action":"questions","content":{}}}"#, json)
+                }
                 AgentAction::Error(e) => {
                     let msg = serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_owned());
                     format!(r#"{{"action":"error","content":{}}}"#, msg)
                 }
                 AgentAction::AssistantMessage(content) => {
-                    let trimmed = content.trim();
-                    if trimmed.starts_with(r#"{"questions":"#) || trimmed.starts_with(r#"{ "questions":"#) {
-                        let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
-                        format!(r#"{{"action":"questions","content":{}}}"#, json)
-                    } else {
-                        let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
-                        format!(r#"{{"action":"message","content":{}}}"#, json)
-                    }
+                    let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
+                    format!(r#"{{"action":"message","content":{}}}"#, json)
                 }
             },
         }
@@ -800,7 +799,8 @@ pub extern "C" fn wasm_nfse_process_response(ptr: *const u8, len: u32) -> u32 {
         match borrow.as_mut() {
             None        => r#"{"action":"error","content":"no active nfse agent"}"#.to_owned(),
             Some(agent) => match agent.process_response(&response) {
-                AgentAction::Continue => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::Continue          => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::AskQuestions(_)   => r#"{"action":"stop"}"#.to_owned(),
                 AgentAction::Stop     => r#"{"action":"stop"}"#.to_owned(),
                 AgentAction::Error(e) => {
                     let msg = serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_owned());
