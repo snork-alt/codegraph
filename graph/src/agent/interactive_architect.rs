@@ -25,11 +25,10 @@ Exploration strategy:
 When you have enough information, respond with a clear and concise answer that:
 - Directly addresses the question
 - References specific files, modules, or nodes by name where relevant
-- Includes a Mermaid diagram only when it genuinely clarifies the answer
+- Includes an ASCII diagram only when it genuinely clarifies the answer
 - Avoids implementation jargon where possible
 
-Use `flowchart TD` or `sequenceDiagram` for flows and `graph TD` for structure diagrams.
-Do not use SVG.
+When a diagram helps, use plain ASCII art (boxes, arrows, trees). Do not use Mermaid or SVG.
 "#;
 
 // ─── InteractiveArchitectAgent ────────────────────────────────────────────────

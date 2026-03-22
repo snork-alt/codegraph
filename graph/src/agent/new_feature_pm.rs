@@ -24,12 +24,13 @@ Explore the codebase to understand how the requested feature fits the project:
 2. Use graph tools to find relevant modules, entry points, data models, and dependencies.
 3. Call multiple independent tools in a single response.
 
-After exploration, you MUST call the `ask_questions` tool with 3–6 clarification questions
-before writing the specification. Never skip this step.
+After exploration, if anything is unclear or ambiguous, call `ask_questions` with up to 6
+clarification questions before writing the specification. Skip this step if the feature
+request is already clear enough to write a good specification without further input.
 - type "open"   → free-text answer.
 - type "select" → user picks exactly one of the provided choices.
 - type "multi"  → user picks one or more of the provided choices.
-- Ask questions that will meaningfully shape the specification: scope, target users, priorities, edge cases.
+- Only ask questions that will meaningfully change the specification: scope, target users, priorities, edge cases.
 
 ── Phase 2: Specification ────────────────────────────────────────────────────
 Write a complete feature specification in Markdown written for a PRODUCT audience,
@@ -190,7 +191,7 @@ impl NewFeatureProductManagerAgent {
             "Project at `{root}` ({file_count} source files, {node_count} nodes).\n\n\
              Feature request: {feature}\n\n\
              Explore the codebase to understand how this feature fits the project, \
-             then call `ask_questions` with 3–6 clarification questions.",
+             then write the specification — or call `ask_questions` first if clarification is needed.",
         );
 
         Self {

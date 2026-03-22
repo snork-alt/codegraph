@@ -27,12 +27,13 @@ CRITICAL RULE — you MUST include `__actionDetails__` on every tool call, no ex
    - Use `get_file_source` when you need to understand a specific implementation.
 4. Call multiple independent tools in a single response.
 
-After exploration, you MUST call the `ask_questions` tool with 3–6 clarification questions
-before writing the plan. Never skip this step.
+After exploration, if anything is unclear or ambiguous, call `ask_questions` with up to 6
+clarification questions before writing the plan. Skip this step if the spec and codebase
+give you enough context to produce a complete plan without further input.
 - type "open"   → free-text answer.
 - type "select" → developer picks exactly one of the provided choices.
 - type "multi"  → developer picks one or more of the provided choices.
-- Ask questions that will meaningfully shape the plan: approach choices, constraints, priorities, trade-offs.
+- Only ask questions that will meaningfully change the plan: approach choices, constraints, priorities, trade-offs.
 
 ── Phase 2: Implementation Plan ──────────────────────────────────────────────
 Write a detailed technical implementation plan in Markdown.
@@ -225,7 +226,7 @@ impl NewFeatureArchitectAgent {
              Feature path: `{feature_path}`\n\n\
              Start by calling `read_feature_spec` to read the product specification, \
              then explore the codebase to understand what needs to change. \
-             Then call `ask_questions` with 3–6 clarification questions.",
+             Write the plan when ready — or call `ask_questions` first if clarification is needed.",
         );
 
         Self {
