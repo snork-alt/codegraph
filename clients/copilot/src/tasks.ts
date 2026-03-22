@@ -53,6 +53,7 @@ export async function handleTasks(
 
   const specsFile = path.join(featurePath, 'specs.md');
   const planFile  = path.join(featurePath, 'plan.md');
+  const tasksFile = path.join(featurePath, 'tasks.md');
 
   if (!fs.existsSync(specsFile)) {
     stream.markdown(`Feature found but has no \`specs.md\`. Run \`/specify\` first.`);
@@ -60,6 +61,13 @@ export async function handleTasks(
   }
   if (!fs.existsSync(planFile)) {
     stream.markdown(`Feature found but has no \`plan.md\`. Run \`/plan\` first.`);
+    return;
+  }
+
+  if (fs.existsSync(tasksFile)) {
+    const existing = fs.readFileSync(tasksFile, 'utf-8');
+    stream.markdown(`Tasks already exist for **${path.basename(featurePath)}**. Opening task view…`);
+    showTasksPanel(existing, tasksFile, rootPath);
     return;
   }
 
@@ -87,7 +95,6 @@ export async function handleTasks(
   }
 
   // ── Save tasks.md ─────────────────────────────────────────────────────────
-  const tasksFile = path.join(featurePath, 'tasks.md');
 
   try {
     fs.writeFileSync(tasksFile, tasks, 'utf-8');

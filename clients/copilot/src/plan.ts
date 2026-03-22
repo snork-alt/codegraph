@@ -57,6 +57,13 @@ export async function handlePlan(
     return;
   }
 
+  const planFile = path.join(featurePath, 'plan.md');
+  if (fs.existsSync(planFile)) {
+    stream.markdown(`A plan already exists for **${path.basename(featurePath)}**. Opening preview…`);
+    await vscode.commands.executeCommand('markdown.showPreview', vscode.Uri.file(planFile));
+    return;
+  }
+
   stream.markdown(`**Planning feature:** ${path.basename(featurePath)}\n\n`);
 
   // ── Phase 1: Explore ─────────────────────────────────────────────────────
@@ -121,7 +128,6 @@ export async function handlePlan(
   }
 
   // ── Save plan ─────────────────────────────────────────────────────────────
-  const planFile = path.join(featurePath, 'plan.md');
 
   try {
     fs.writeFileSync(planFile, plan, 'utf-8');
