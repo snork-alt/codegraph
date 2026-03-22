@@ -1,0 +1,27 @@
+{
+  "name": "@codegraph/cli",
+  "version": "0.1.0",
+  "description": "CLI for codegraph — indexes source files into a dependency graph",
+  "main": "dist/index.js",
+  "bin": {
+    "codegraph": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@codegraph/common-ts": "file:../common-ts",
+    "commander": "^12.0.0",
+    "dotenv": "^17.3.1",
+    "openai": "^6.32.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

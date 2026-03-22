@@ -1,0 +1,24 @@
+[build]
+target = "wasm32-wasip1"
+
+[target.wasm32-wasip1]
+linker = "/Users/matteo/wasi-sdk/bin/wasm32-wasip1-clang"
+rustflags = [
+  "-C", "link-arg=-Wl,--export=fs_response_reserve",
+  "-C", "link-arg=-Wl,--export=wasm_response_ptr",
+  "-C", "link-arg=-Wl,--export=_initialize",
+  "-C", "link-arg=-Wl,--export=wasm_run",
+  "-C", "link-arg=-Wl,--export=wasm_pending_tasks",
+  "-C", "link-arg=-Wl,--export=wasm_set_descriptions",
+  "-C", "link-arg=-Wl,--export=wasm_architect_new",
+  "-C", "link-arg=-Wl,--export=wasm_architect_get_request",
+  "-C", "link-arg=-Wl,--export=wasm_architect_process_response",
+  "-C", "link-arg=-Wl,--export=wasm_pm_new",
+  "-C", "link-arg=-Wl,--export=wasm_pm_get_request",
+  "-C", "link-arg=-Wl,--export=wasm_pm_process_response",
+]
+
+[env]
+CC_wasm32_wasip1 = "/Users/matteo/wasi-sdk/bin/wasm32-wasip1-clang"
+AR_wasm32_wasip1 = "/Users/matteo/wasi-sdk/bin/llvm-ar"
+CFLAGS_wasm32_wasip1 = "--sysroot=/Users/matteo/wasi-sdk/share/wasi-sysroot -fPIC"

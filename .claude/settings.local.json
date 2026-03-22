@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo add:*)",
+      "Read(//opt/**)",
+      "Read(//usr/local/**)",
+      "Bash(rustup target:*)",
+      "Bash(brew install:*)",
+      "Bash(brew search:*)",
+      "Bash(curl -sL \"https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-arm64-macos.tar.gz\" -o /tmp/wasi-sdk.tar.gz)",
+      "Bash(tar -xzf /tmp/wasi-sdk.tar.gz -C /opt)",
+      "Bash(mv /opt/wasi-sdk-25.0-arm64-macos /opt/wasi-sdk)",
+      "Bash(mkdir -p ~/wasi-sdk)",
+      "Bash(tar -xzf /tmp/wasi-sdk.tar.gz -C ~/wasi-sdk --strip-components=1)",
+      "Bash(ls:*)",
+      "Bash(cargo test:*)",
+      "Bash(python3 -c \":*)",
+      "Bash(grep -E \"^\\(test |running |FAILED|ok$|error\\)\")",
+      "Bash(grep -v \"^$\")",
+      "Bash(for i:*)",
+      "Bash(do cargo:*)",
+      "Bash(done)",
+      "Bash(find ~/.cargo/registry -path */tree-sitter-rust-*/src/node-types.json)",
+      "Bash(python3:*)",
+      "Bash(grep -E \"^\\(running|test .* \\\\.\\\\.\\\\.|FAILED|ok$|test result\\)\")",
+      "Bash(wasmtime run:*)",
+      "Bash(npm install:*)",
+      "Bash(npx tsc:*)",
+      "Bash(node:*)",
+      "Bash(rustc -vV)",
+      "Bash(npm run:*)",
+      "Bash(wasm-objdump -x /Users/matteo/codegraph/graph/target/wasm32-wasip1/release/codegraph.wasm)",
+      "Bash(find /Users/matteo/codegraph/clients -type f -not -path */node_modules/* -not -path */dist/*)",
+      "Bash(wasm-objdump -x /Users/matteo/codegraph/clients/common-wasm/codegraph.wasm)",
+      "WebFetch(domain:code.visualstudio.com)",
+      "WebSearch",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}

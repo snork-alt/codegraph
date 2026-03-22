@@ -1,0 +1,23 @@
+[package]
+name = "graph"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+# rlib: used by `cargo test` (native) and linked into the bin below.
+crate-type = ["rlib"]
+
+[[bin]]
+name = "codegraph"
+path = "src/bin/codegraph.rs"
+
+[dependencies]
+hex = "0.4.3"
+ignore = "0.4"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9.34"
+sha2 = { version = "0.10.9", features = ["asm"] }
+tree-sitter = "0.26.7"
+tree-sitter-java = "0.23.5"
+tree-sitter-rust = "0.24.1"

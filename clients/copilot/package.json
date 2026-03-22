@@ -1,0 +1,55 @@
+{
+  "name": "codegraph-copilot",
+  "displayName": "CodeGraph",
+  "description": "Analyse your codebase with CodeGraph via GitHub Copilot Chat",
+  "version": "0.1.0",
+  "publisher": "codegraph",
+  "private": true,
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": ["AI", "Other"],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "CodeGraph",
+      "properties": {
+        "codegraph.enrichmentConcurrency": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Number of parallel LLM requests used when enriching entity descriptions."
+        }
+      }
+    },
+    "chatParticipants": [
+      {
+        "id": "codegraph.codegraph",
+        "name": "codegraph",
+        "fullName": "CodeGraph",
+        "description": "Analyse your workspace: build a dependency graph, architecture doc, and product spec.",
+        "isSticky": false,
+        "commands": [
+          {
+            "name": "analyze",
+            "description": "Index the workspace, generate architecture.md and specs.md"
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "build": "tsc --noEmit false",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.95.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@codegraph/common-ts": "file:../common-ts"
+  }
+}
