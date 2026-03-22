@@ -7,8 +7,11 @@ use serde::Serialize;
 
 use crate::filesystem::FileSystem;
 use crate::graph::{DependencyGraph, NodeKind};
+use crate::languages::golang::GoExtractor;
 use crate::languages::java::JavaExtractor;
+use crate::languages::python::PythonExtractor;
 use crate::languages::rust::RustExtractor;
+use crate::languages::typescript::TypeScriptExtractor;
 use crate::parser::{hash_source, LanguageExtractor};
 use crate::serializer::GraphSerializer;
 
@@ -133,8 +136,11 @@ impl GraphIndexer {
             extractors: HashMap::new(),
             rebuild:    false,
         };
-        indexer.register(&["java"], JavaExtractor);
-        indexer.register(&["rs"],   RustExtractor);
+        indexer.register(&["go"],        GoExtractor);
+        indexer.register(&["java"],      JavaExtractor);
+        indexer.register(&["py"],        PythonExtractor);
+        indexer.register(&["rs"],        RustExtractor);
+        indexer.register(&["ts", "tsx"], TypeScriptExtractor);
         indexer
     }
 
@@ -479,8 +485,8 @@ public class Alpha { public void run() {} }
         let mut fs = MockFileSystem::new();
         fs.add(&format!("{}/README.md", root),    "# doc");
         fs.add(&format!("{}/config.toml", root),  "[package]");
-        fs.add(&format!("{}/script.py", root),    "print('hi')");
         fs.add(&format!("{}/style.css", root),    "body {}");
+        fs.add(&format!("{}/data.json", root),    "{}");
         let g = run(root, fs);
         assert_eq!(g.node_count(), 0, "no supported extensions");
     }
