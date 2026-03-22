@@ -41,30 +41,44 @@ const DEFAULT_WASM_PATH = path.resolve(
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /**
- * One file's worth of LLM description work.
+ * One file's worth of LLM enrichment work.
  *
  * `snippets` maps each qualified name to its extracted source lines.
- * `schema` has the same keys with empty-string values; the caller fills them
- * and passes the completed map to `applyDescriptions`.
+ * `schema` has the same keys with empty-string values; the LLM fills them.
+ * `isTestSchema` has the same keys with `null` for unknown nodes and `true`
+ * for nodes already confirmed as tests by static heuristics.  The LLM should
+ * fill `null` entries with `true` or `false`; pre-filled entries can be skipped.
  */
 export interface DescriptionTask {
-  file:     string;
+  file:         string;
   /** qualified_name → extracted source lines for that node */
-  snippets: Record<string, string>;
-  /** qualified_name → "" — LLM must fill every value */
-  schema:   Record<string, string>;
+  snippets:     Record<string, string>;
+  /** qualified_name → "" — LLM must fill every value with a description */
+  schema:       Record<string, string>;
+  /** qualified_name → null | true — LLM fills null entries with true/false */
+  is_test_schema: Record<string, boolean | null>;
+}
+
+/** Payload sent to `wasm_set_descriptions` after LLM enrichment. */
+export interface EnrichmentPayload {
+  /** qualified_name → description string */
+  descriptions: Record<string, string>;
+  /** qualified_name → true/false */
+  is_test:      Record<string, boolean>;
 }
 
 /**
  * The result of an `indexGraph` call.
  *
- * `tasks` lists files that were added or changed and need LLM descriptions.
- * Call `applyDescriptions(descriptions)` to persist `graph.yml`.
- * Pass an empty object to skip description enrichment.
+ * `tasks` lists files that were added or changed and need LLM enrichment.
+ * Call `applyEnrichment(payload)` to persist `graph.yml`.
+ * Pass empty records to skip enrichment.
  */
 export interface IndexSession {
-  tasks: DescriptionTask[];
+  tasks:          DescriptionTask[];
+  /** @deprecated Use `applyEnrichment` instead. */
   applyDescriptions: (descriptions: Record<string, string>) => void;
+  applyEnrichment:   (payload: EnrichmentPayload) => void;
 }
 
 // ─── Memory helpers ───────────────────────────────────────────────────────────
@@ -210,12 +224,17 @@ export async function indexGraph(
   // ── 3. Return session ─────────────────────────────────────────────────────
   const wasmSetDescriptions = exports['wasm_set_descriptions'] as (ptr: number, len: number) => number;
 
-  function applyDescriptions(descriptions: Record<string, string>): void {
-    const { ptr, len } = writeToWasm(memory, exports, JSON.stringify(descriptions));
+  function applyEnrichment(payload: EnrichmentPayload): void {
+    const { ptr, len } = writeToWasm(memory, exports, JSON.stringify(payload));
     wasmSetDescriptions(ptr, len);
   }
 
-  return { tasks, applyDescriptions };
+  // Back-compat: old callers that only pass descriptions still work.
+  function applyDescriptions(descriptions: Record<string, string>): void {
+    applyEnrichment({ descriptions, is_test: {} });
+  }
+
+  return { tasks, applyDescriptions, applyEnrichment };
 }
 
 // ─── Architecture generation ──────────────────────────────────────────────────

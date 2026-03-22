@@ -28,93 +28,149 @@ export function buildPrompt(task: DescriptionTask): string {
     ].join('\n'))
     .join('\n\n');
 
-  const schemaJson = JSON.stringify(task.schema, null, 2);
+  const schemaJson   = JSON.stringify(task.schema, null, 2);
+  // Only ask about is_test for nodes not already confirmed (null entries).
+  const unknownTests = Object.fromEntries(
+    Object.entries(task.is_test_schema ?? {}).filter(([, v]) => v === null)
+  );
+  const isTestJson   = JSON.stringify(unknownTests, null, 2);
+  const hasTestWork  = Object.keys(unknownTests).length > 0;
 
   return [
     `You are a code documentation assistant.`,
     ``,
     `Below are source code snippets from \`${task.file}\`.`,
-    `Each snippet shows exactly one code entity that needs a description.`,
+    `Each snippet shows exactly one code entity.`,
     ``,
     entityBlocks,
     ``,
-    `Return a JSON object that maps each qualified name to a concise`,
-    `one-sentence description of what that entity does.`,
+    `Return a single JSON object with exactly two top-level keys:`,
     ``,
-    `IMPORTANT: Copy the property names EXACTLY as shown below.`,
-    `Do not modify, simplify, or reformat the property names in any way.`,
+    `1. "descriptions": map each qualified name to a concise one-sentence`,
+    `   description of what that entity does.`,
     ``,
-    `Required keys (fill every value — do not omit any key):`,
+    `2. "is_test": map each qualified name to true if the entity is part of a`,
+    `   test suite (test class, test method, test helper, mock, fixture, etc.),`,
+    `   or false if it is production code.`,
+    ``,
+    `IMPORTANT: Copy the property names EXACTLY as shown. Do not modify them.`,
+    ``,
+    `Required keys for "descriptions" (fill every value):`,
     schemaJson,
     ``,
+    ...(hasTestWork ? [
+      `Required keys for "is_test" (fill every null with true or false):`,
+      isTestJson,
+      ``,
+    ] : [
+      `"is_test": {} (no unknown entries — all already determined statically)`,
+      ``,
+    ]),
     `Rules:`,
     `- Output only valid JSON — no markdown fences, no extra keys, no comments.`,
-    `- Every value must be a non-empty string.`,
+    `- Every "descriptions" value must be a non-empty string.`,
+    `- Every "is_test" value must be a boolean (true or false).`,
   ].join('\n');
 }
 
 // ─── Schema extractor ─────────────────────────────────────────────────────────
 
 /**
- * Extract all valid descriptions from a parsed LLM response.
+ * Extract descriptions and is_test flags from a parsed LLM response.
  *
- * Returns `{ filled, missing }`:
- * - `filled`  — keys returned by the LLM with a non-empty string value
+ * The LLM returns `{ descriptions: { ... }, is_test: { ... } }`.
+ * For backwards compatibility, a flat object (old format) is treated as
+ * containing only descriptions.
+ *
+ * Returns `{ filled, missing, isTest }`:
+ * - `filled`  — keys with a non-empty description string
  * - `missing` — keys from `schema` absent or empty in the response
+ * - `isTest`  — keys whose is_test value was returned as a boolean
  *
  * Returns `null` if `parsed` is not a plain object.
  */
 export function extractPartialSchema(
   parsed: unknown,
   schema: Record<string, string>,
-): { filled: Record<string, string>; missing: string[] } | null {
+): { filled: Record<string, string>; missing: string[]; isTest: Record<string, boolean> } | null {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return null;
   }
-  const obj     = parsed as Record<string, unknown>;
-  const filled:  Record<string, string> = {};
-  const missing: string[] = [];
+  const obj = parsed as Record<string, unknown>;
+
+  // Support both the new two-key format and the old flat format.
+  const descObj: Record<string, unknown> =
+    (typeof obj['descriptions'] === 'object' && obj['descriptions'] !== null)
+      ? obj['descriptions'] as Record<string, unknown>
+      : obj;
+  const testObj: Record<string, unknown> =
+    (typeof obj['is_test'] === 'object' && obj['is_test'] !== null)
+      ? obj['is_test'] as Record<string, unknown>
+      : {};
+
+  const filled:  Record<string, string>  = {};
+  const missing: string[]                = [];
+  const isTest:  Record<string, boolean> = {};
 
   for (const key of Object.keys(schema)) {
-    const val = obj[key];
+    const val = descObj[key];
     if (typeof val === 'string' && val.trim() !== '') {
       filled[key] = val.trim();
     } else {
       missing.push(key);
     }
   }
-  return { filled, missing };
+
+  for (const [key, val] of Object.entries(testObj)) {
+    if (typeof val === 'boolean') {
+      isTest[key] = val;
+    }
+  }
+
+  return { filled, missing, isTest };
 }
 
 // ─── Per-file enrichment ──────────────────────────────────────────────────────
 
 const MAX_RETRIES = 3;
 
+export interface EnrichFileResult {
+  descriptions: Record<string, string>;
+  isTest:       Record<string, boolean>;
+}
+
 /**
- * Ask the LLM for descriptions for all entities in `task`.
+ * Ask the LLM for descriptions and is_test flags for all entities in `task`.
  *
- * Accepts partial results on each attempt and retries only the missing keys,
- * so each retry prompt is progressively smaller.
+ * Accepts partial results on each attempt and retries only missing description
+ * keys. is_test values confirmed statically are passed through unchanged.
  */
 export async function enrichFile(
   task:  DescriptionTask,
   llm:   LLMClient,
   index: number,
   total: number,
-): Promise<Record<string, string>> {
+): Promise<EnrichFileResult> {
   const entityCount = Object.keys(task.schema).length;
   console.log(`  [${index}/${total}] ${task.file} — ${entityCount} entities`);
 
-  const accumulated: Record<string, string> = {};
+  const descriptions: Record<string, string>  = {};
+  const isTest:       Record<string, boolean>  = {};
   let remaining = { ...task.schema };
+
+  // Seed is_test with values already confirmed by static heuristics.
+  for (const [key, val] of Object.entries(task.is_test_schema ?? {})) {
+    if (val !== null) isTest[key] = val;
+  }
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     if (Object.keys(remaining).length === 0) break;
 
     const partialTask: DescriptionTask = {
-      file:     task.file,
-      snippets: Object.fromEntries(Object.keys(remaining).map(k => [k, task.snippets[k] ?? ''])),
-      schema:   remaining,
+      file:           task.file,
+      snippets:       Object.fromEntries(Object.keys(remaining).map(k => [k, task.snippets[k] ?? ''])),
+      schema:         remaining,
+      is_test_schema: Object.fromEntries(Object.keys(remaining).map(k => [k, task.is_test_schema?.[k] ?? null])),
     };
 
     try {
@@ -130,7 +186,8 @@ export async function enrichFile(
         continue;
       }
 
-      Object.assign(accumulated, result.filled);
+      Object.assign(descriptions, result.filled);
+      Object.assign(isTest, result.isTest);
       remaining = Object.fromEntries(result.missing.map(k => [k, '']));
 
       if (result.missing.length > 0 && attempt < MAX_RETRIES - 1) {
@@ -147,7 +204,7 @@ export async function enrichFile(
     }
   }
 
-  const filledCount = Object.keys(accumulated).length;
+  const filledCount = Object.keys(descriptions).length;
   if (Object.keys(remaining).length > 0) {
     console.warn(
       `  [${index}/${total}] ${task.file} — done (${filledCount}/${entityCount} described,` +
@@ -156,7 +213,7 @@ export async function enrichFile(
   } else {
     console.log(`  [${index}/${total}] ${task.file} — done (${filledCount}/${entityCount})`);
   }
-  return accumulated;
+  return { descriptions, isTest };
 }
 
 // ─── Batching ─────────────────────────────────────────────────────────────────
@@ -173,7 +230,8 @@ export function splitIntoBatches(task: DescriptionTask, batchSize: number): Desc
     const slice    = keys.slice(i, i + batchSize);
     const snippets = Object.fromEntries(slice.map(k => [k, task.snippets[k] ?? '']));
     const schema   = Object.fromEntries(slice.map(k => [k, '']));
-    batches.push({ file: task.file, snippets, schema });
+    const is_test_schema = Object.fromEntries(slice.map(k => [k, task.is_test_schema?.[k] ?? null]));
+    batches.push({ file: task.file, snippets, schema, is_test_schema });
   }
   return batches;
 }

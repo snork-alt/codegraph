@@ -235,12 +235,35 @@ impl<'g> GraphExplorer<'g> {
     pub fn enums(&self)      -> Vec<NodeId> { self.nodes_of_kind(NodeKind::Enum) }
     pub fn functions(&self)  -> Vec<NodeId> { self.nodes_of_kind(NodeKind::Function) }
 
+    /// All node IDs of the given kind, **excluding** test nodes.
+    pub fn classes_no_tests(&self)    -> Vec<NodeId> { self.nodes_of_kind_no_tests(NodeKind::Class) }
+    pub fn interfaces_no_tests(&self) -> Vec<NodeId> { self.nodes_of_kind_no_tests(NodeKind::Interface) }
+    pub fn traits_no_tests(&self)     -> Vec<NodeId> { self.nodes_of_kind_no_tests(NodeKind::Trait) }
+    pub fn enums_no_tests(&self)      -> Vec<NodeId> { self.nodes_of_kind_no_tests(NodeKind::Enum) }
+    pub fn functions_no_tests(&self)  -> Vec<NodeId> { self.nodes_of_kind_no_tests(NodeKind::Function) }
+
     /// All node IDs of the given kind.
     pub fn nodes_of_kind(&self, kind: NodeKind) -> Vec<NodeId> {
         self.idx.nodes_by_kind
             .get(&format!("{:?}", kind))
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// All node IDs of the given kind, filtering out nodes marked `is_test`.
+    pub fn nodes_of_kind_no_tests(&self, kind: NodeKind) -> Vec<NodeId> {
+        self.nodes_of_kind(kind)
+            .into_iter()
+            .filter(|&id| !self.graph.get_node(id).map(|n| n.is_test).unwrap_or(false))
+            .collect()
+    }
+
+    /// All test nodes of the given kind.
+    pub fn test_nodes_of_kind(&self, kind: NodeKind) -> Vec<NodeId> {
+        self.nodes_of_kind(kind)
+            .into_iter()
+            .filter(|&id| self.graph.get_node(id).map(|n| n.is_test).unwrap_or(false))
+            .collect()
     }
 
     // ── Call graph ────────────────────────────────────────────────────────────

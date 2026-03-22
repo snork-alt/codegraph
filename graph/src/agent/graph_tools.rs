@@ -20,6 +20,7 @@ pub fn node_summary(graph: &DependencyGraph, id: NodeId) -> Value {
             "qualified_name": n.qualified_name,
             "file":           n.file,
             "visibility":     format!("{:?}", n.visibility),
+            "is_test":        n.is_test,
             "description":    n.description,
         }),
     }
@@ -43,6 +44,7 @@ pub fn node_details(graph: &DependencyGraph, id: NodeId) -> Value {
             "is_async":         n.is_async,
             "is_abstract":      n.is_abstract,
             "is_constructor":   n.is_constructor,
+            "is_test":          n.is_test,
             "type_annotation":  n.type_annotation,
             "generic_params":   n.generic_params,
             "generic_bounds":   n.generic_bounds,
@@ -277,6 +279,12 @@ pub fn register_graph_tools(
                         description: "Maximum number of results to return (default: 50).".into(),
                         required:    false,
                     },
+                    ToolParameter {
+                        name:        "exclude_tests".into(),
+                        kind:        ParamKind::Boolean,
+                        description: "When true, omit nodes marked as test code (default: false).".into(),
+                        required:    false,
+                    },
                 ],
             },
             move |args| {
@@ -285,12 +293,14 @@ pub fn register_graph_tools(
                     Some(k) => k,
                     None    => return r#"{"error":"missing 'kind' parameter"}"#.into(),
                 };
-                let limit = v["limit"].as_u64().unwrap_or(50) as usize;
+                let limit         = v["limit"].as_u64().unwrap_or(50) as usize;
+                let exclude_tests = v["exclude_tests"].as_bool().unwrap_or(false);
                 let explorer = GraphExplorer::new(&g);
                 match parse_node_kind(kind_str) {
                     None    => format!(r#"{{"error":"unknown node kind: {}"}}"#, kind_str),
                     Some(k) => {
                         let nodes: Vec<Value> = explorer.nodes_of_kind(k).into_iter()
+                            .filter(|&id| !exclude_tests || !g.get_node(id).map(|n| n.is_test).unwrap_or(false))
                             .take(limit)
                             .map(|id| node_summary(&g, id))
                             .collect();
@@ -321,6 +331,12 @@ pub fn register_graph_tools(
                         description: "Maximum number of results to return (default: 20).".into(),
                         required:    false,
                     },
+                    ToolParameter {
+                        name:        "exclude_tests".into(),
+                        kind:        ParamKind::Boolean,
+                        description: "When true, omit nodes marked as test code (default: false).".into(),
+                        required:    false,
+                    },
                 ],
             },
             move |args| {
@@ -329,11 +345,13 @@ pub fn register_graph_tools(
                     Some(q) => q.to_lowercase(),
                     None    => return r#"{"error":"missing 'query' parameter"}"#.into(),
                 };
-                let limit = v["limit"].as_u64().unwrap_or(20) as usize;
+                let limit         = v["limit"].as_u64().unwrap_or(20) as usize;
+                let exclude_tests = v["exclude_tests"].as_bool().unwrap_or(false);
                 let nodes: Vec<Value> = g.nodes.values()
                     .filter(|n| {
-                        n.name.to_lowercase().contains(&query)
-                            || n.qualified_name.to_lowercase().contains(&query)
+                        (!exclude_tests || !n.is_test)
+                            && (n.name.to_lowercase().contains(&query)
+                                || n.qualified_name.to_lowercase().contains(&query))
                     })
                     .take(limit)
                     .map(|n| node_summary(&g, n.id))
@@ -355,11 +373,15 @@ pub fn register_graph_tools(
             move |_args| {
                 let explorer = GraphExplorer::new(&g);
                 let s = explorer.summary();
+                let test_nodes = g.nodes.values().filter(|n| n.is_test).count();
+                let prod_nodes = s.total_nodes.saturating_sub(test_nodes);
                 serde_json::to_string(&json!({
-                    "total_nodes": s.total_nodes,
-                    "total_edges": s.total_edges,
-                    "node_counts": s.node_counts,
-                    "edge_counts": s.edge_counts,
+                    "total_nodes":      s.total_nodes,
+                    "total_edges":      s.total_edges,
+                    "production_nodes": prod_nodes,
+                    "test_nodes":       test_nodes,
+                    "node_counts":      s.node_counts,
+                    "edge_counts":      s.edge_counts,
                 })).unwrap_or_default()
             },
         );

@@ -15,6 +15,40 @@ use crate::languages::typescript::TypeScriptExtractor;
 use crate::parser::{hash_source, LanguageExtractor};
 use crate::serializer::GraphSerializer;
 
+// ─── Test-file detection ──────────────────────────────────────────────────────
+
+/// Returns `true` when the file path matches a well-known test-file naming
+/// convention for any supported language.
+fn is_test_file(path: &str) -> bool {
+    let file = Path::new(path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("");
+    let stem = Path::new(file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    // Go:         foo_test.go
+    // Rust:       tests/ directory or files named *_test.rs
+    // Python:     test_foo.py  /  foo_test.py
+    // TypeScript: foo.test.ts  /  foo.spec.ts  /  foo.test.tsx  /  foo.spec.tsx
+    // Java:       FooTest.java / FooTests.java / FooSpec.java / FooIT.java
+    file.ends_with("_test.go")
+        || stem.starts_with("test_")
+        || stem.ends_with("_test")
+        || stem.ends_with(".test")
+        || stem.ends_with(".spec")
+        || stem.ends_with("Test")
+        || stem.ends_with("Tests")
+        || stem.ends_with("Spec")
+        || stem.ends_with("IT")
+        || path.contains("/test/")
+        || path.contains("/tests/")
+        || path.contains("/__tests__/")
+        || path.contains("/spec/")
+}
+
 // ─── Description tasks ────────────────────────────────────────────────────────
 
 /// Node kinds that benefit from an LLM-generated description.
@@ -36,17 +70,22 @@ const DESCRIBED_KINDS: &[NodeKind] = &[
 /// node.  `schema` has the same keys but empty-string values; the caller fills
 /// those values (typically via an LLM) and passes the completed map to
 /// [`IndexResult::commit`].
+///
+/// `is_test_schema` has the same keys with `null` values; the LLM fills each
+/// with `true` or `false` indicating whether the node is a test.  Nodes in
+/// files whose names already match test-file patterns are pre-flagged via
+/// static heuristics and do not need LLM confirmation.
 #[derive(Debug, Clone, Serialize)]
 pub struct DescriptionTask {
     /// Relative path to the source file (relative to the indexer root).
-    pub file:     String,
-    /// `qualified_name → source snippet` — only the lines that span each
-    /// describable node, extracted from the file.  Passed to the LLM so the
-    /// prompt contains only what is relevant.
-    pub snippets: HashMap<String, String>,
-    /// `qualified_name → ""` — the LLM must fill every value with a non-empty
-    /// description string and return this object as JSON.
-    pub schema:   HashMap<String, String>,
+    pub file:          String,
+    /// `qualified_name → source snippet`.
+    pub snippets:      HashMap<String, String>,
+    /// `qualified_name → ""` — LLM fills each with a description string.
+    pub schema:        HashMap<String, String>,
+    /// `qualified_name → null` — LLM fills each with `true`/`false`.
+    /// Nodes that are statically known to be tests are omitted (already set).
+    pub is_test_schema: HashMap<String, Option<bool>>,
 }
 
 // ─── IndexResult ──────────────────────────────────────────────────────────────
@@ -70,18 +109,24 @@ impl IndexResult {
         &self.tasks
     }
 
-    /// Apply `descriptions` (qualified_name → description text) to matching
-    /// graph nodes, write `<root>/.codegraph/graph.yml`, and return the final
-    /// graph.
+    /// Apply `descriptions` (qualified_name → description text) and
+    /// `is_test_flags` (qualified_name → bool) to matching graph nodes,
+    /// write `<root>/.codegraph/graph.yml`, and return the final graph.
     ///
-    /// Pass an empty map to skip description patching and just persist the
-    /// structural graph (see also [`finish`](Self::finish)).
-    pub fn commit(mut self, descriptions: HashMap<String, String>) -> DependencyGraph {
+    /// Pass empty maps to skip enrichment and just persist the structural graph.
+    pub fn commit(
+        mut self,
+        descriptions:  HashMap<String, String>,
+        is_test_flags: HashMap<String, bool>,
+    ) -> DependencyGraph {
         for node in self.graph.nodes.values_mut() {
             if let Some(desc) = descriptions.get(&node.qualified_name) {
                 if !desc.is_empty() {
                     node.description = Some(desc.clone());
                 }
+            }
+            if let Some(&flag) = is_test_flags.get(&node.qualified_name) {
+                node.is_test = flag;
             }
         }
         let graph_yml = format!("{}/.codegraph/graph.yml", self.root);
@@ -91,10 +136,9 @@ impl IndexResult {
         self.graph
     }
 
-    /// Commit without descriptions — write the structural graph as-is.
-    /// Equivalent to `commit(HashMap::new())`.
+    /// Commit without enrichment — write the structural graph as-is.
     pub fn finish(self) -> DependencyGraph {
-        self.commit(HashMap::new())
+        self.commit(HashMap::new(), HashMap::new())
     }
 }
 
@@ -242,10 +286,58 @@ impl GraphIndexer {
         // ── 6. Resolve cross-file references ──────────────────────────────────
         graph.resolve();
 
-        // ── 7. Build description tasks for changed/new files ─────────────────
+        // ── 7. Static test-node detection ─────────────────────────────────────
+        Self::mark_test_nodes(&mut graph);
+
+        // ── 8. Build description tasks for changed/new files ─────────────────
         let tasks = Self::make_tasks(&changed_files, &current_files, &graph);
 
         IndexResult { tasks, graph, root: self.root, fs: self.fs }
+    }
+
+    /// Statically mark nodes as `is_test = true` using file-name and
+    /// name-pattern heuristics — no LLM required.
+    ///
+    /// Rules applied (any match → `is_test = true`):
+    /// - File name matches a test-file pattern (e.g. `*_test.go`, `test_*.py`,
+    ///   `*.test.ts`, `*.spec.ts`, `*Test.java`, `*Tests.java`, `*Spec.java`)
+    /// - Class name ends with `Test`, `Tests`, `Spec`, `Suite`
+    /// - Method/function name starts with `test_`, `Test`, or matches
+    ///   `it(`, `describe(` call patterns (detected by name prefix `it_`/`describe_`)
+    fn mark_test_nodes(graph: &mut DependencyGraph) {
+        // Collect files that are test files by path pattern.
+        let test_files: std::collections::HashSet<String> = graph
+            .nodes
+            .values()
+            .filter(|n| n.kind == NodeKind::File && is_test_file(&n.file))
+            .map(|n| n.file.clone())
+            .collect();
+
+        for node in graph.nodes.values_mut() {
+            if node.is_test { continue; } // already flagged
+            if test_files.contains(&node.file) {
+                node.is_test = true;
+                continue;
+            }
+            // Name-based heuristics for classes and methods not in test files
+            // (e.g. test helper classes embedded in production files).
+            node.is_test = match node.kind {
+                NodeKind::Class | NodeKind::Trait => {
+                    let n = &node.name;
+                    n.ends_with("Test") || n.ends_with("Tests")
+                        || n.ends_with("Spec") || n.ends_with("Suite")
+                        || n.starts_with("Test") && n.len() > 4
+                }
+                NodeKind::Method | NodeKind::Function => {
+                    let n = &node.name;
+                    n.starts_with("test_") || n.starts_with("Test")
+                        || n == "setUp" || n == "tearDown"
+                        || n == "beforeEach" || n == "afterEach"
+                        || n == "beforeAll" || n == "afterAll"
+                }
+                _ => false,
+            };
+        }
     }
 
     /// Build one [`DescriptionTask`] per changed/new file that contains at
@@ -272,8 +364,9 @@ impl GraphIndexer {
 
             if describable.is_empty() { continue; }
 
-            let mut snippets: HashMap<String, String> = HashMap::new();
-            let mut schema:   HashMap<String, String> = HashMap::new();
+            let mut snippets:      HashMap<String, String>       = HashMap::new();
+            let mut schema:        HashMap<String, String>       = HashMap::new();
+            let mut is_test_schema: HashMap<String, Option<bool>> = HashMap::new();
 
             for node in describable {
                 // Span lines are 1-based; clamp to actual line count.
@@ -282,12 +375,19 @@ impl GraphIndexer {
                 let snippet = lines[start..end].join("\n");
                 snippets.insert(node.qualified_name.clone(), snippet);
                 schema.insert(node.qualified_name.clone(), String::new());
+                // Nodes already confirmed by static heuristics don't need LLM
+                // classification; pass their known value so the caller can skip them.
+                is_test_schema.insert(
+                    node.qualified_name.clone(),
+                    if node.is_test { Some(true) } else { None },
+                );
             }
 
             tasks.push(DescriptionTask {
                 file: rel_path.clone(),
                 snippets,
                 schema,
+                is_test_schema,
             });
         }
         tasks
@@ -1459,7 +1559,7 @@ public class Alpha { public void run() {} }
             .collect();
 
         // Commit with filled descriptions.
-        let g = result.commit(descs.clone());
+        let g = result.commit(descs.clone(), HashMap::new());
 
         // Every described node must now carry the description we supplied.
         for (qname, desc) in &descs {
@@ -1500,7 +1600,7 @@ public class Alpha { public void run() {} }
             .keys()
             .map(|k| (k.clone(), String::new()))
             .collect();
-        let g = result.commit(descs);
+        let g = result.commit(descs, HashMap::new());
         for node in g.nodes.values() {
             assert!(node.description.is_none(),
                 "empty-string description must not be written to node {}",
@@ -1517,7 +1617,7 @@ public class Alpha { public void run() {} }
         let mut descs: HashMap<String, String> = HashMap::new();
         descs.insert("com.example.DoesNotExist".to_string(), "should be silently ignored".to_string());
         // Must not panic.
-        let g = result.commit(descs);
+        let g = result.commit(descs, HashMap::new());
         assert!(g.node_count() > 0);
     }
 

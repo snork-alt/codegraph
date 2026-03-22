@@ -245,10 +245,28 @@ pub extern "C" fn wasm_pending_tasks() -> u32 {
 ///
 /// Returns 0 on success, -1 if there is no pending result (i.e. `wasm_run`
 /// was not called first).
+#[derive(serde::Deserialize, Default)]
+struct EnrichmentPayload {
+    #[serde(default)]
+    descriptions: HashMap<String, String>,
+    #[serde(default)]
+    is_test: HashMap<String, bool>,
+}
+
+/// Apply LLM-generated descriptions and is_test flags, then persist `graph.yml`.
+///
+/// TypeScript must write a UTF-8 JSON object with the shape:
+/// ```json
+/// {
+///   "descriptions": { "pkg.ClassName": "…" },
+///   "is_test":      { "pkg.ClassName": true }
+/// }
+/// ```
+/// Both fields are optional — omit either to skip that enrichment step.
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_set_descriptions(json_ptr: *const u8, json_len: u32) -> i32 {
-    let descriptions: HashMap<String, String> = if json_len == 0 {
-        HashMap::new()
+    let payload: EnrichmentPayload = if json_len == 0 {
+        EnrichmentPayload::default()
     } else {
         let json_bytes = unsafe { std::slice::from_raw_parts(json_ptr, json_len as usize) };
         serde_json::from_slice(json_bytes).unwrap_or_default()
@@ -256,7 +274,7 @@ pub extern "C" fn wasm_set_descriptions(json_ptr: *const u8, json_len: u32) -> i
 
     let result = CURRENT_RESULT.with(|cell| cell.borrow_mut().take());
     match result {
-        Some(r) => { r.commit(descriptions); 0 }
+        Some(r) => { r.commit(payload.descriptions, payload.is_test); 0 }
         None    => -1,
     }
 }

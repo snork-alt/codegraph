@@ -112,6 +112,11 @@ pub struct Node {
     /// True for constructors (`__init__`, `constructor`, `new`).
     pub is_constructor: bool,
 
+    /// True when this node is part of a test suite (test file, test class, or
+    /// test method/function).  Set by static file-name heuristics and confirmed
+    /// (or initially set) by LLM enrichment during the description pass.
+    pub is_test: bool,
+
     /// Declared return type or field type as a raw string.
     pub type_annotation: Option<String>,
 
@@ -157,6 +162,7 @@ impl Node {
             is_async: false,
             is_abstract: false,
             is_constructor: false,
+            is_test: false,
             type_annotation: None,
             generic_params: Vec::new(),
             generic_bounds: Vec::new(),
