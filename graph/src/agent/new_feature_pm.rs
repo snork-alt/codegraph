@@ -40,6 +40,10 @@ Write a complete feature specification in Markdown written for a PRODUCT audienc
 not a technical one. Avoid file names, class names, function names, and implementation details.
 Focus on WHAT the feature does and WHY, not HOW it is built.
 
+CRITICAL OUTPUT RULE: The output MUST start with the title line — absolutely NO introductory
+text, preamble, summary of exploration, or sentences like "Based on my analysis…" before it.
+The very first character of your response must be `#`.
+
 The VERY FIRST line must be the title in this exact format:
 # <Feature Title>
 (Keep the title concise — 3 to 6 words — it becomes the directory name.)

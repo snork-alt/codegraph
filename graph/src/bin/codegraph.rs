@@ -36,6 +36,7 @@ use std::collections::HashMap;
 use graph::agent::interactive_architect::InteractiveArchitectAgent;
 use graph::agent::new_feature_architect::NewFeatureArchitectAgent;
 use graph::agent::new_feature_pm::NewFeatureProductManagerAgent;
+use graph::agent::new_feature_se::NewFeatureSoftwareEngineerAgent;
 use graph::agent::product_manager::ProductManagerAgent;
 use graph::agent::software_architect::SoftwareArchitectAgent;
 use graph::filesystem::{FileSystem, FsEntry};
@@ -97,6 +98,9 @@ thread_local! {
 
     /// Holds the running [`NewFeatureArchitectAgent`] across both phases.
     static CURRENT_NFA: RefCell<Option<NewFeatureArchitectAgent>> = const { RefCell::new(None) };
+
+    /// Holds the running [`NewFeatureSoftwareEngineerAgent`].
+    static CURRENT_NFSE: RefCell<Option<NewFeatureSoftwareEngineerAgent>> = const { RefCell::new(None) };
 }
 
 /// Called by the host to allocate (or reuse) a buffer of `size` bytes inside
@@ -731,4 +735,83 @@ pub extern "C" fn wasm_nfa_submit_answers(ptr: *const u8, len: u32) -> i32 {
             Some(agent) => { agent.submit_answers(&answers); 0 }
         }
     })
+}
+
+// ─── New Feature Software Engineer reactor exports ────────────────────────────
+
+/// Initialise a [`NewFeatureSoftwareEngineerAgent`].
+///
+/// TypeScript writes JSON `{"root":"…","feature_path":"…"}` into the buffer.
+/// Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfse_new(ptr: *const u8, len: u32) -> i32 {
+    #[derive(serde::Deserialize)]
+    struct Params { root: String, feature_path: String }
+
+    let json = read_wasm_string(ptr, len);
+    let params: Params = match serde_json::from_str(&json) {
+        Ok(p)  => p,
+        Err(_) => return -1,
+    };
+
+    let graph_path = format!("{}/.codegraph/graph.yml", params.root);
+    let yaml = match HostFileSystem.read(&graph_path) {
+        Some(y) => y,
+        None    => return -1,
+    };
+    let graph = match GraphSerializer::deserialize(&yaml) {
+        Ok(g)  => g,
+        Err(_) => return -1,
+    };
+
+    let agent = NewFeatureSoftwareEngineerAgent::new(
+        graph,
+        params.root,
+        params.feature_path,
+        Box::new(HostFileSystem),
+    );
+    CURRENT_NFSE.with(|cell| *cell.borrow_mut() = Some(agent));
+    0
+}
+
+/// Returns the byte length of the NFSE request JSON (0 if no agent active).
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfse_get_request() -> u32 {
+    let json = CURRENT_NFSE.with(|cell| {
+        cell.borrow().as_ref().map(|a| a.get_request()).unwrap_or_default()
+    });
+    if json.is_empty() { return 0; }
+    write_wasm_response(json.as_bytes())
+}
+
+/// Feed the LLM response to the NFSE agent.
+///
+/// Actions:
+///   {"action":"continue"}
+///   {"action":"message","content":"…tasks markdown…"}  — tasks ready, TypeScript writes tasks.md
+///   {"action":"stop"}
+///   {"action":"error","content":"…"}
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_nfse_process_response(ptr: *const u8, len: u32) -> u32 {
+    use graph::agent::llm_agent::AgentAction;
+    let response = read_wasm_string(ptr, len);
+    let action_json = CURRENT_NFSE.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        match borrow.as_mut() {
+            None        => r#"{"action":"error","content":"no active nfse agent"}"#.to_owned(),
+            Some(agent) => match agent.process_response(&response) {
+                AgentAction::Continue => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::Stop     => r#"{"action":"stop"}"#.to_owned(),
+                AgentAction::Error(e) => {
+                    let msg = serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_owned());
+                    format!(r#"{{"action":"error","content":{}}}"#, msg)
+                }
+                AgentAction::AssistantMessage(content) => {
+                    let json = serde_json::to_string(&content).unwrap_or_else(|_| r#""""#.to_owned());
+                    format!(r#"{{"action":"message","content":{}}}"#, json)
+                }
+            },
+        }
+    });
+    write_wasm_response(action_json.as_bytes())
 }

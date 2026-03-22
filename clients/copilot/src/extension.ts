@@ -3,6 +3,7 @@ import { handleAnalyze } from './analyze';
 import { handleAsk } from './ask';
 import { handleSpecify } from './specify';
 import { handlePlan } from './plan';
+import { handleTasks } from './tasks';
 
 const PARTICIPANT_ID = 'codegraph.codegraph';
 
@@ -38,6 +39,10 @@ async function handler(
 
     case 'plan':
       await handlePlan(request, stream, token);
+      break;
+
+    case 'tasks':
+      await handleTasks(request, stream, token);
       break;
 
     default:

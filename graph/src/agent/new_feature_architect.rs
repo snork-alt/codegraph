@@ -37,6 +37,8 @@ Only ask questions that would meaningfully change the implementation plan.
 
 ── Phase 2: Implementation Plan ──────────────────────────────────────────────
 Write a detailed technical implementation plan in Markdown.
+CRITICAL OUTPUT RULE: NO introductory text, preamble, or sentences like "Based on my
+exploration…" before the title. The very first character of your response must be `#`.
 The VERY FIRST line must be:
 # <Feature Title> — Implementation Plan
 

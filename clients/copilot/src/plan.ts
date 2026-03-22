@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { createNewFeatureArchitectSession } from '@codegraph/common-ts';
 import { createCopilotLLMClient } from './llm-bridge';
 import { showQuestionsPanel } from './questions-webview';
+import { stripPreamble } from './utils';
 
 /**
  * Handle `@codegraph /plan [feature-name]`.
@@ -112,6 +113,8 @@ export async function handlePlan(
     stream.markdown(`\n**Error generating plan:** ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
+
+  plan = stripPreamble(plan);
 
   if (!plan.trim()) {
     stream.markdown('\nThe agent did not produce a plan.');

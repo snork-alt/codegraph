@@ -43,6 +43,10 @@
           {
             "name": "plan",
             "description": "Generate a technical implementation plan for a feature"
+          },
+          {
+            "name": "tasks",
+            "description": "Generate a step-by-step implementation task list for a feature, then implement it with Copilot"
           }
         ]
       }

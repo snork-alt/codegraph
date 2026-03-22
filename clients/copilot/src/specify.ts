@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { createNewFeaturePMSession } from '@codegraph/common-ts';
 import { createCopilotLLMClient } from './llm-bridge';
 import { showQuestionsPanel } from './questions-webview';
+import { stripPreamble } from './utils';
 
 /**
  * Handle `@codegraph /specify <feature description>`.
@@ -98,6 +99,8 @@ export async function handleSpecify(
     stream.markdown(`\n**Error generating spec:** ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
+
+  spec = stripPreamble(spec);
 
   if (!spec.trim()) {
     stream.markdown('\nThe agent did not produce a specification.');

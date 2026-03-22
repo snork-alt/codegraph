@@ -27,6 +27,9 @@ rustflags = [
   "-C", "link-arg=-Wl,--export=wasm_nfa_get_request",
   "-C", "link-arg=-Wl,--export=wasm_nfa_process_response",
   "-C", "link-arg=-Wl,--export=wasm_nfa_submit_answers",
+  "-C", "link-arg=-Wl,--export=wasm_nfse_new",
+  "-C", "link-arg=-Wl,--export=wasm_nfse_get_request",
+  "-C", "link-arg=-Wl,--export=wasm_nfse_process_response",
 ]
 
 [env]

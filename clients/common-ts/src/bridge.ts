@@ -659,3 +659,59 @@ export async function createNewFeatureArchitectSession(
     },
   };
 }
+
+/**
+ * Load `graph.yml`, create a {@link NewFeatureSoftwareEngineerAgent} inside
+ * WASM, and drive it to completion.
+ *
+ * Returns the tasks.md markdown string. The caller is responsible for writing
+ * the file and showing a preview.
+ *
+ * @param rootPath    Absolute path to the project root.
+ * @param featurePath Absolute path to the feature directory
+ *                    (must contain both `specs.md` and `plan.md`).
+ * @param llm         LLM client callback.
+ * @param wasmPath    Optional override for the WASM binary location.
+ */
+export async function runNewFeatureSE(
+  rootPath:    string,
+  featurePath: string,
+  llm:         ArchitectLLMClient,
+  wasmPath?:   string,
+): Promise<string> {
+  const resolvedWasm = wasmPath ?? process.env['CODEGRAPH_WASM'] ?? DEFAULT_WASM_PATH;
+  const { memory, exports } = await createWasmInstance(resolvedWasm);
+
+  const wasmResponsePtr  = exports['wasm_response_ptr']           as () => number;
+  const wasmNfseNew      = exports['wasm_nfse_new']               as (ptr: number, len: number) => number;
+  const wasmNfseGetReq   = exports['wasm_nfse_get_request']       as () => number;
+  const wasmNfseProcess  = exports['wasm_nfse_process_response']  as (ptr: number, len: number) => number;
+
+  const payload = JSON.stringify({ root: rootPath, feature_path: featurePath });
+  const { ptr, len } = writeToWasm(memory, exports, payload);
+  const initResult = wasmNfseNew(ptr, len);
+  if (initResult !== 0) {
+    throw new Error(
+      `Failed to initialise NewFeatureSoftwareEngineerAgent. ` +
+      `Make sure '${rootPath}/.codegraph/graph.yml' exists and both ` +
+      `'${featurePath}/specs.md' and '${featurePath}/plan.md' are present.`,
+    );
+  }
+
+  for (;;) {
+    const reqLen = wasmNfseGetReq();
+    if (reqLen === 0) throw new Error('NFSE agent returned empty request — this is a bug.');
+    const reqJson      = readString(memory, wasmResponsePtr(), reqLen);
+    const responseJson = await llm(reqJson);
+    const { ptr: rPtr, len: rLen } = writeToWasm(memory, exports, responseJson);
+    const actionLen    = wasmNfseProcess(rPtr, rLen);
+    const action: ArchitectAction = JSON.parse(readString(memory, wasmResponsePtr(), actionLen));
+
+    switch (action.action) {
+      case 'continue':  continue;
+      case 'message':   return action.content ?? '';
+      case 'stop':      return '';
+      case 'error':     throw new Error(`NFSE agent error: ${action.content ?? 'unknown'}`);
+    }
+  }
+}
