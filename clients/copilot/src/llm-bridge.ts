@@ -107,6 +107,7 @@ function toVsCodeTools(tools: OAITool[]): vscode.LanguageModelChatTool[] {
 
 async function collectResponse(
   response: vscode.LanguageModelChatResponse,
+  onText?:  (fragment: string) => void,
 ): Promise<{ text: string; toolCalls: OAIToolCall[] }> {
   let text = '';
   const toolCalls: OAIToolCall[] = [];
@@ -114,6 +115,7 @@ async function collectResponse(
   for await (const part of response.stream) {
     if (part instanceof vscode.LanguageModelTextPart) {
       text += part.value;
+      onText?.(part.value);
     } else if (part instanceof vscode.LanguageModelToolCallPart) {
       toolCalls.push({
         id:   part.callId,
@@ -195,17 +197,26 @@ function parseTextToolCalls(text: string): { remainingText: string; toolCalls: O
 export type OnToolCall = (toolName: string, actionDetails: string) => void;
 
 /**
+ * Fired for each text fragment streamed by the LLM in the final answer turn.
+ * Not called for preamble text that precedes tool calls.
+ */
+export type OnText = (fragment: string) => void;
+
+/**
  * Create an {@link ArchitectLLMClient} backed by the GitHub Copilot LLM.
  *
  * @param model       The VS Code language model chosen by the user.
  * @param cancelToken Cancellation token forwarded from the chat request.
  * @param onToolCall  Optional callback fired for each tool call with its name
  *                    and `__actionDetails__` — use this to drive progress UI.
+ * @param onText      Optional callback fired for each text fragment in the LLM
+ *                    response — use this to stream the final answer in real time.
  */
 export function createCopilotLLMClient(
   model:       vscode.LanguageModelChat,
   cancelToken: vscode.CancellationToken,
   onToolCall?: OnToolCall,
+  onText?:     OnText,
 ): ArchitectLLMClient {
   return async (requestJson: string): Promise<string> => {
     const req: OAIRequest = JSON.parse(requestJson);
@@ -226,7 +237,7 @@ export function createCopilotLLMClient(
       throw err;
     }
 
-    const { text, toolCalls } = await collectResponse(response);
+    const { text, toolCalls } = await collectResponse(response, onText);
 
     // Fire onToolCall for each tool call so callers can update progress UI.
     if (onToolCall) {

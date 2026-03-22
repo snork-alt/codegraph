@@ -33,6 +33,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use graph::agent::interactive_architect::InteractiveArchitectAgent;
 use graph::agent::product_manager::ProductManagerAgent;
 use graph::agent::software_architect::SoftwareArchitectAgent;
 use graph::filesystem::{FileSystem, FsEntry};
@@ -84,6 +85,10 @@ thread_local! {
     /// Holds the running [`ProductManagerAgent`] between `wasm_pm_new`
     /// and successive `wasm_pm_process_response` calls.
     static CURRENT_PM: RefCell<Option<ProductManagerAgent>> = const { RefCell::new(None) };
+
+    /// Holds the running [`InteractiveArchitectAgent`] between `wasm_ia_new`
+    /// and successive `wasm_ia_process_response` calls.
+    static CURRENT_IA: RefCell<Option<InteractiveArchitectAgent>> = const { RefCell::new(None) };
 }
 
 /// Called by the host to allocate (or reuse) a buffer of `size` bytes inside
@@ -356,6 +361,86 @@ pub extern "C" fn wasm_architect_process_response(ptr: *const u8, len: u32) -> u
     write_wasm_response(action_json.as_bytes())
 }
 
+// ─── Interactive Architect reactor exports ────────────────────────────────────
+
+/// Load `graph.yml` and initialise an [`InteractiveArchitectAgent`] for a
+/// one-off architectural question.
+///
+/// TypeScript must write a JSON payload `{"root":"…","question":"…"}` into the
+/// WASM buffer first:
+/// 1. `ptr = fs_response_reserve(json_len)`
+/// 2. `memory[ptr..] = utf8_json`
+/// 3. `wasm_ia_new(ptr, json_len)`
+///
+/// Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_ia_new(ptr: *const u8, len: u32) -> i32 {
+    #[derive(serde::Deserialize)]
+    struct Params { root: String, question: String }
+
+    let json = read_wasm_string(ptr, len);
+    let params: Params = match serde_json::from_str(&json) {
+        Ok(p)  => p,
+        Err(_) => return -1,
+    };
+
+    let graph_path = format!("{}/.codegraph/graph.yml", params.root);
+    let yaml = match HostFileSystem.read(&graph_path) {
+        Some(y) => y,
+        None    => return -1,
+    };
+    let graph = match GraphSerializer::deserialize(&yaml) {
+        Ok(g)  => g,
+        Err(_) => return -1,
+    };
+
+    let agent = InteractiveArchitectAgent::new(
+        graph,
+        params.root,
+        params.question,
+        Box::new(HostFileSystem),
+    );
+    CURRENT_IA.with(|cell| *cell.borrow_mut() = Some(agent));
+    0
+}
+
+/// Returns the byte length of the IA request JSON (0 if no agent active).
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_ia_get_request() -> u32 {
+    let json = CURRENT_IA.with(|cell| {
+        cell.borrow().as_ref().map(|a| a.get_request()).unwrap_or_default()
+    });
+    if json.is_empty() { return 0; }
+    write_wasm_response(json.as_bytes())
+}
+
+/// Feed the LLM response to the IA agent.
+/// Returns the byte length of the result JSON (same action format as architect).
+/// On "message" action the answer is in `content` — TypeScript streams it to chat.
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_ia_process_response(ptr: *const u8, len: u32) -> u32 {
+    use graph::agent::llm_agent::AgentAction;
+    let response = read_wasm_string(ptr, len);
+    let action_json = CURRENT_IA.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        match borrow.as_mut() {
+            None        => r#"{"action":"error","content":"no active interactive architect"}"#.to_owned(),
+            Some(agent) => match agent.process_response(&response) {
+                AgentAction::Continue            => r#"{"action":"continue"}"#.to_owned(),
+                AgentAction::Stop                => r#"{"action":"stop"}"#.to_owned(),
+                AgentAction::Error(e)            => {
+                    let msg = serde_json::to_string(&e).unwrap_or_else(|_| r#""unknown""#.to_owned());
+                    format!(r#"{{"action":"error","content":{}}}"#, msg)
+                }
+                AgentAction::AssistantMessage(answer) => {
+                    let json = serde_json::to_string(&answer).unwrap_or_else(|_| r#""""#.to_owned());
+                    format!(r#"{{"action":"message","content":{}}}"#, json)
+                }
+            },
+        }
+    });
+    write_wasm_response(action_json.as_bytes())
+}
 
 // ─── Product Manager reactor exports ─────────────────────────────────────────
 

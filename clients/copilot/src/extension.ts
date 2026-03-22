@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { handleAnalyze } from './analyze';
+import { handleAsk } from './ask';
 
 const PARTICIPANT_ID = 'codegraph.codegraph';
 
@@ -30,11 +31,7 @@ async function handler(
       break;
 
     default:
-      stream.markdown(
-        'Hi! I\'m **CodeGraph**. Use `/analyze` to index your workspace and ' +
-        'generate an architecture document and product specification.\n\n' +
-        '```\n@codegraph /analyze\n```',
-      );
+      await handleAsk(request, stream, token);
   }
 
   return {};

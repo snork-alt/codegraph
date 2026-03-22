@@ -1,5 +1,5 @@
 export type { DescriptionTask, IndexSession, ArchitectLLMClient } from './bridge';
-export { indexGraph, runArchitect, runProductManager } from './bridge';
+export { indexGraph, runArchitect, runProductManager, runInteractiveArchitect } from './bridge';
 export type { LLMClient } from './enrichment';
 export {
   buildPrompt,
