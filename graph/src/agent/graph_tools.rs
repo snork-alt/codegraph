@@ -80,6 +80,23 @@ pub fn parse_node_kind(s: &str) -> Option<NodeKind> {
     }
 }
 
+// ─── Pagination helper ────────────────────────────────────────────────────────
+
+/// Slice `items` with `offset`/`limit` and return a paginated JSON envelope:
+/// `{ "items": [...], "total": N, "offset": O, "returned": K, "has_more": bool }`.
+fn paginate(items: Vec<Value>, offset: usize, limit: usize) -> String {
+    let total   = items.len();
+    let page: Vec<Value> = items.into_iter().skip(offset).take(limit).collect();
+    let returned = page.len();
+    serde_json::to_string(&json!({
+        "items":    page,
+        "total":    total,
+        "offset":   offset,
+        "returned": returned,
+        "has_more": offset + returned < total,
+    })).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.into())
+}
+
 // ─── Shared graph tool registration ──────────────────────────────────────────
 //
 // Registers the 8 graph-exploration tools shared by all agents:
@@ -97,17 +114,23 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "list_files".into(),
-                description: "List all source files in the graph with a count of how many nodes each file contains.".into(),
-                parameters:  vec![],
+                description: "List all source files in the graph with a count of how many nodes each file contains. Results are paginated (default 50 per page). Use `offset` to retrieve subsequent pages; check `has_more` in the response.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),                  required: false },
+                ],
             },
-            move |_args| {
+            move |args| {
+                let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let mut files: Vec<Value> = g.by_file.iter()
                     .map(|(file, ids)| json!({ "file": file, "node_count": ids.len() }))
                     .collect();
                 files.sort_by(|a, b| {
                     a["file"].as_str().unwrap_or("").cmp(b["file"].as_str().unwrap_or(""))
                 });
-                serde_json::to_string(&files).unwrap_or_else(|_| "[]".into())
+                paginate(files, offset, limit)
             },
         );
     }
@@ -118,14 +141,11 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_file_summary".into(),
-                description: "Get a list of all nodes (classes, functions, fields, etc.) declared in a specific source file.".into(),
+                description: "Get a list of all nodes (classes, functions, fields, etc.) declared in a specific source file. Results are paginated (default 50). Use `offset` + check `has_more` to page through large files.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "file".into(),
-                        kind:        ParamKind::String,
-                        description: "The file path as it appears in the graph.".into(),
-                        required:    true,
-                    },
+                    ToolParameter { name: "file".into(),   kind: ParamKind::String, description: "The file path as it appears in the graph.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(),      required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),      required: false },
                 ],
             },
             move |args| {
@@ -134,11 +154,13 @@ pub fn register_graph_tools(
                     Some(f) => f,
                     None    => return r#"{"error":"missing 'file' parameter"}"#.into(),
                 };
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 match g.by_file.get(file) {
                     None      => format!(r#"{{"error":"file not found: {}"}}"#, file),
                     Some(ids) => {
                         let nodes: Vec<Value> = ids.iter().map(|&id| node_summary(&g, id)).collect();
-                        serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                        paginate(nodes, offset, limit)
                     }
                 }
             },
@@ -181,14 +203,11 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_dependencies".into(),
-                description: "Get the nodes that a given node depends on (outgoing edges: calls, extends, implements, imports, etc.).".into(),
+                description: "Get the nodes that a given node depends on (outgoing edges: calls, extends, implements, imports, etc.). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the source node.".into(),
-                        required:    true,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the source node.".into(), required: true  },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(),        required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),        required: false },
                 ],
             },
             move |args| {
@@ -197,6 +216,8 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -214,7 +235,7 @@ pub fn register_graph_tools(
                         json!({ "kind": format!("{:?}", e.kind), "target": target })
                     })
                     .collect();
-                serde_json::to_string(&edges).unwrap_or_else(|_| "[]".into())
+                paginate(edges, offset, limit)
             },
         );
     }
@@ -225,14 +246,11 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_dependents".into(),
-                description: "Get the nodes that depend on a given node (incoming edges).".into(),
+                description: "Get the nodes that depend on a given node (incoming edges). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the target node.".into(),
-                        required:    true,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the target node.".into(), required: true  },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(),        required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),        required: false },
                 ],
             },
             move |args| {
@@ -241,6 +259,8 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -254,7 +274,7 @@ pub fn register_graph_tools(
                         json!({ "kind": format!("{:?}", e.kind), "source": source })
                     })
                     .collect();
-                serde_json::to_string(&edges).unwrap_or_else(|_| "[]".into())
+                paginate(edges, offset, limit)
             },
         );
     }
@@ -265,26 +285,12 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "find_nodes_by_kind".into(),
-                description: "Find all nodes of a given kind. Valid kinds: File, Package, Class, Interface, Trait, Enum, Annotation, TypeAlias, Function, Method, Field, StaticField, Constant, Variable, Parameter, TypeParameter, Closure, GlobalVariable, Import, ExternalPackage.".into(),
+                description: "Find all nodes of a given kind. Valid kinds: File, Package, Class, Interface, Trait, Enum, Annotation, TypeAlias, Function, Method, Field, StaticField, Constant, Variable, Parameter, TypeParameter, Closure, GlobalVariable, Import, ExternalPackage. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "kind".into(),
-                        kind:        ParamKind::String,
-                        description: "The NodeKind to search for (case-sensitive, e.g. 'Class').".into(),
-                        required:    true,
-                    },
-                    ToolParameter {
-                        name:        "limit".into(),
-                        kind:        ParamKind::Number,
-                        description: "Maximum number of results to return (default: 50).".into(),
-                        required:    false,
-                    },
-                    ToolParameter {
-                        name:        "exclude_tests".into(),
-                        kind:        ParamKind::Boolean,
-                        description: "When true, omit nodes marked as test code (default: false).".into(),
-                        required:    false,
-                    },
+                    ToolParameter { name: "kind".into(),          kind: ParamKind::String,  description: "The NodeKind to search for (case-sensitive, e.g. 'Class').".into(),      required: true  },
+                    ToolParameter { name: "offset".into(),        kind: ParamKind::Number,  description: "Number of items to skip (default: 0). Use for pagination.".into(),       required: false },
+                    ToolParameter { name: "limit".into(),         kind: ParamKind::Number,  description: "Maximum items to return (default: 50).".into(),                          required: false },
+                    ToolParameter { name: "exclude_tests".into(), kind: ParamKind::Boolean, description: "When true, omit nodes marked as test code (default: false).".into(),     required: false },
                 ],
             },
             move |args| {
@@ -293,7 +299,8 @@ pub fn register_graph_tools(
                     Some(k) => k,
                     None    => return r#"{"error":"missing 'kind' parameter"}"#.into(),
                 };
-                let limit         = v["limit"].as_u64().unwrap_or(50) as usize;
+                let offset        = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit         = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let exclude_tests = v["exclude_tests"].as_bool().unwrap_or(false);
                 let explorer = GraphExplorer::new(&g);
                 match parse_node_kind(kind_str) {
@@ -301,10 +308,9 @@ pub fn register_graph_tools(
                     Some(k) => {
                         let nodes: Vec<Value> = explorer.nodes_of_kind(k).into_iter()
                             .filter(|&id| !exclude_tests || !g.get_node(id).map(|n| n.is_test).unwrap_or(false))
-                            .take(limit)
                             .map(|id| node_summary(&g, id))
                             .collect();
-                        serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                        paginate(nodes, offset, limit)
                     }
                 }
             },
@@ -317,26 +323,12 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "search_nodes".into(),
-                description: "Search for nodes whose name or qualified name contains the given query string (case-insensitive substring match).".into(),
+                description: "Search for nodes whose name or qualified name contains the given query string (case-insensitive substring match). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "query".into(),
-                        kind:        ParamKind::String,
-                        description: "Substring to search for in node names.".into(),
-                        required:    true,
-                    },
-                    ToolParameter {
-                        name:        "limit".into(),
-                        kind:        ParamKind::Number,
-                        description: "Maximum number of results to return (default: 20).".into(),
-                        required:    false,
-                    },
-                    ToolParameter {
-                        name:        "exclude_tests".into(),
-                        kind:        ParamKind::Boolean,
-                        description: "When true, omit nodes marked as test code (default: false).".into(),
-                        required:    false,
-                    },
+                    ToolParameter { name: "query".into(),         kind: ParamKind::String,  description: "Substring to search for in node names.".into(),                      required: true  },
+                    ToolParameter { name: "offset".into(),        kind: ParamKind::Number,  description: "Number of items to skip (default: 0). Use for pagination.".into(),   required: false },
+                    ToolParameter { name: "limit".into(),         kind: ParamKind::Number,  description: "Maximum items to return (default: 50).".into(),                      required: false },
+                    ToolParameter { name: "exclude_tests".into(), kind: ParamKind::Boolean, description: "When true, omit nodes marked as test code (default: false).".into(), required: false },
                 ],
             },
             move |args| {
@@ -345,7 +337,8 @@ pub fn register_graph_tools(
                     Some(q) => q.to_lowercase(),
                     None    => return r#"{"error":"missing 'query' parameter"}"#.into(),
                 };
-                let limit         = v["limit"].as_u64().unwrap_or(20) as usize;
+                let offset        = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit         = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let exclude_tests = v["exclude_tests"].as_bool().unwrap_or(false);
                 let nodes: Vec<Value> = g.nodes.values()
                     .filter(|n| {
@@ -353,10 +346,9 @@ pub fn register_graph_tools(
                             && (n.name.to_lowercase().contains(&query)
                                 || n.qualified_name.to_lowercase().contains(&query))
                     })
-                    .take(limit)
                     .map(|n| node_summary(&g, n.id))
                     .collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -393,20 +385,12 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_callers".into(),
-                description: "Get all methods/functions that call the given node (transitive upstream callers via Calls edges).".into(),
+                description: "Get all methods/functions that call the given node (transitive upstream callers via Calls edges). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the callee node.".into(),
-                        required:    true,
-                    },
-                    ToolParameter {
-                        name:        "depth".into(),
-                        kind:        ParamKind::Number,
-                        description: "Max traversal depth (default: unlimited).".into(),
-                        required:    false,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the callee node.".into(),        required: true  },
+                    ToolParameter { name: "depth".into(),          kind: ParamKind::Number, description: "Max traversal depth (default: unlimited).".into(),           required: false },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),              required: false },
                 ],
             },
             move |args| {
@@ -415,7 +399,9 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
-                let depth = v["depth"].as_u64().map(|n| n as usize);
+                let depth  = v["depth"].as_u64().map(|n| n as usize);
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -423,7 +409,7 @@ pub fn register_graph_tools(
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.upstream_callers(id, depth).into_iter()
                     .map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -434,20 +420,12 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_callees".into(),
-                description: "Get all methods/functions transitively called by the given node (downstream calls via Calls edges).".into(),
+                description: "Get all methods/functions transitively called by the given node (downstream calls via Calls edges). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the caller node.".into(),
-                        required:    true,
-                    },
-                    ToolParameter {
-                        name:        "depth".into(),
-                        kind:        ParamKind::Number,
-                        description: "Max traversal depth (default: unlimited).".into(),
-                        required:    false,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the caller node.".into(),        required: true  },
+                    ToolParameter { name: "depth".into(),          kind: ParamKind::Number, description: "Max traversal depth (default: unlimited).".into(),           required: false },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),              required: false },
                 ],
             },
             move |args| {
@@ -456,7 +434,9 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
-                let depth = v["depth"].as_u64().map(|n| n as usize);
+                let depth  = v["depth"].as_u64().map(|n| n as usize);
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -464,7 +444,7 @@ pub fn register_graph_tools(
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.downstream_calls(id, depth).into_iter()
                     .map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -475,14 +455,11 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_implementors".into(),
-                description: "Get all types that directly implement the given interface or trait.".into(),
+                description: "Get all types that directly implement the given interface or trait. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the interface or trait.".into(),
-                        required:    true,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the interface or trait.".into(), required: true  },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),               required: false },
                 ],
             },
             move |args| {
@@ -491,6 +468,8 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -498,7 +477,7 @@ pub fn register_graph_tools(
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.implementors(id).into_iter()
                     .map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -509,20 +488,12 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_subclasses".into(),
-                description: "Get all transitive subclasses of the given class (follows Extends edges downward).".into(),
+                description: "Get all transitive subclasses of the given class (follows Extends edges downward). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the class.".into(),
-                        required:    true,
-                    },
-                    ToolParameter {
-                        name:        "depth".into(),
-                        kind:        ParamKind::Number,
-                        description: "Max traversal depth (default: unlimited).".into(),
-                        required:    false,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the class.".into(),              required: true  },
+                    ToolParameter { name: "depth".into(),          kind: ParamKind::Number, description: "Max traversal depth (default: unlimited).".into(),           required: false },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),              required: false },
                 ],
             },
             move |args| {
@@ -531,7 +502,9 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
-                let depth = v["depth"].as_u64().map(|n| n as usize);
+                let depth  = v["depth"].as_u64().map(|n| n as usize);
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -539,7 +512,7 @@ pub fn register_graph_tools(
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.all_subclasses(id, depth).into_iter()
                     .map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -550,14 +523,11 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_superclasses".into(),
-                description: "Get the full superclass chain of the given class (follows Extends edges upward to the root).".into(),
+                description: "Get the full superclass chain of the given class (follows Extends edges upward to the root). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the class.".into(),
-                        required:    true,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the class.".into(),              required: true  },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),              required: false },
                 ],
             },
             move |args| {
@@ -566,6 +536,8 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -573,7 +545,7 @@ pub fn register_graph_tools(
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.superclass_chain(id).into_iter()
                     .map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -584,14 +556,11 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_methods".into(),
-                description: "Get all methods declared directly on a class, interface, or trait.".into(),
+                description: "Get all methods declared directly on a class, interface, or trait. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the type.".into(),
-                        required:    true,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the type.".into(),              required: true  },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),              required: false },
                 ],
             },
             move |args| {
@@ -600,6 +569,8 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -607,7 +578,7 @@ pub fn register_graph_tools(
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.methods_of(id).into_iter()
                     .map(|id| node_details(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -618,14 +589,11 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_fields".into(),
-                description: "Get all fields, static fields, and constants declared on a type.".into(),
+                description: "Get all fields, static fields, and constants declared on a type. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the type.".into(),
-                        required:    true,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the type.".into(),              required: true  },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),              required: false },
                 ],
             },
             move |args| {
@@ -634,6 +602,8 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -641,7 +611,7 @@ pub fn register_graph_tools(
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.fields_of(id).into_iter()
                     .map(|id| node_details(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -652,14 +622,11 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_public_api".into(),
-                description: "Get all public members of a type (its external contract).".into(),
+                description: "Get all public members of a type (its external contract). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the type.".into(),
-                        required:    true,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the type.".into(),              required: true  },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),              required: false },
                 ],
             },
             move |args| {
@@ -668,6 +635,8 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -675,7 +644,7 @@ pub fn register_graph_tools(
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.public_api(id).into_iter()
                     .map(|id| node_details(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -726,21 +695,19 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_hotspots".into(),
-                description: "Get the top-N most depended-upon nodes (highest incoming-edge count). Useful for identifying the core of the codebase.".into(),
+                description: "Get the most depended-upon nodes (highest incoming-edge count). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "limit".into(),
-                        kind:        ParamKind::Number,
-                        description: "Number of hotspots to return (default: 20).".into(),
-                        required:    false,
-                    },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),                  required: false },
                 ],
             },
-            move |_args| {
-                let v: Value = serde_json::from_str(_args).unwrap_or(Value::Null);
-                let limit = v["limit"].as_u64().unwrap_or(20) as usize;
+            move |args| {
+                let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let explorer = GraphExplorer::new(&g);
-                let spots: Vec<Value> = explorer.hotspots(limit).into_iter()
+                // Fetch all hotspots (no internal cap) then paginate.
+                let spots: Vec<Value> = explorer.hotspots(usize::MAX).into_iter()
                     .map(|(id, count)| {
                         let mut s = node_summary(&g, id);
                         if let Some(obj) = s.as_object_mut() {
@@ -749,7 +716,7 @@ pub fn register_graph_tools(
                         s
                     })
                     .collect();
-                serde_json::to_string(&spots).unwrap_or_else(|_| "[]".into())
+                paginate(spots, offset, limit)
             },
         );
     }
@@ -760,25 +727,21 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_entry_points".into(),
-                description: "Get all public methods/functions with no internal callers — the true API entry points of the codebase.".into(),
+                description: "Get all public methods/functions with no internal callers — the true API entry points of the codebase. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "limit".into(),
-                        kind:        ParamKind::Number,
-                        description: "Maximum number of results (default: 50).".into(),
-                        required:    false,
-                    },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),                  required: false },
                 ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
-                let limit = v["limit"].as_u64().unwrap_or(50) as usize;
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.entry_points().into_iter()
-                    .take(limit)
                     .map(|id| node_summary(&g, id))
                     .collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -789,20 +752,12 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_change_impact".into(),
-                description: "Get everything that may need to change if the given node changes (reverse closure over Calls, Instantiates, Reads, Writes, HasType, Returns, Extends, Implements edges).".into(),
+                description: "Get everything that may need to change if the given node changes (reverse closure over Calls, Instantiates, Reads, Writes, HasType, Returns, Extends, Implements edges). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter {
-                        name:        "qualified_name".into(),
-                        kind:        ParamKind::String,
-                        description: "The fully-qualified name of the node being changed.".into(),
-                        required:    true,
-                    },
-                    ToolParameter {
-                        name:        "depth".into(),
-                        kind:        ParamKind::Number,
-                        description: "Max traversal depth (default: unlimited).".into(),
-                        required:    false,
-                    },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the node being changed.".into(), required: true  },
+                    ToolParameter { name: "depth".into(),          kind: ParamKind::Number, description: "Max traversal depth (default: unlimited).".into(),            required: false },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(),  required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),               required: false },
                 ],
             },
             move |args| {
@@ -811,7 +766,9 @@ pub fn register_graph_tools(
                     Some(q) => q,
                     None    => return r#"{"error":"missing 'qualified_name' parameter"}"#.into(),
                 };
-                let depth = v["depth"].as_u64().map(|n| n as usize);
+                let depth  = v["depth"].as_u64().map(|n| n as usize);
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let id = match g.find_by_qualified(qname) {
                     Some(id) => id,
                     None     => return format!(r#"{{"error":"node not found: {}"}}"#, qname),
@@ -819,7 +776,7 @@ pub fn register_graph_tools(
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.change_impact(id, depth).into_iter()
                     .map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -830,10 +787,16 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_package_dependencies".into(),
-                description: "Get a collapsed package-to-package dependency view of the entire codebase (counts cross-package edges from Calls, Instantiates, Implements, Extends, Imports, References).".into(),
-                parameters:  vec![],
+                description: "Get a collapsed package-to-package dependency view of the entire codebase (counts cross-package edges from Calls, Instantiates, Implements, Extends, Imports, References). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),                  required: false },
+                ],
             },
-            move |_args| {
+            move |args| {
+                let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let explorer = GraphExplorer::new(&g);
                 let deps: Vec<Value> = explorer.package_dependency_graph().into_iter()
                     .map(|d| json!({
@@ -842,7 +805,7 @@ pub fn register_graph_tools(
                         "edge_count": d.edge_count,
                     }))
                     .collect();
-                serde_json::to_string(&deps).unwrap_or_else(|_| "[]".into())
+                paginate(deps, offset, limit)
             },
         );
     }
@@ -853,16 +816,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_direct_callers".into(),
-                description: "Get the immediate callers of a node (one hop, not transitive).".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the callee.".into(), required: true }],
+                description: "Get the immediate callers of a node (one hop, not transitive). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the callee.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.direct_callers(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -873,16 +842,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_direct_callees".into(),
-                description: "Get the immediate callees of a node (one hop, not transitive).".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the caller.".into(), required: true }],
+                description: "Get the immediate callees of a node (one hop, not transitive). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "The fully-qualified name of the caller.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.direct_callees(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -923,20 +898,24 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_interface_hierarchy".into(),
-                description: "Get interfaces that transitively extend the given interface (sub-interfaces).".into(),
+                description: "Get interfaces that transitively extend the given interface (sub-interfaces). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
                 parameters:  vec![
-                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the interface.".into(), required: true },
-                    ToolParameter { name: "depth".into(), kind: ParamKind::Number, description: "Max traversal depth (default: unlimited).".into(), required: false },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the interface.".into(),              required: true  },
+                    ToolParameter { name: "depth".into(),          kind: ParamKind::Number, description: "Max traversal depth (default: unlimited).".into(),     required: false },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(),         required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),        required: false },
                 ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
-                let depth = v["depth"].as_u64().map(|n| n as usize);
+                let depth  = v["depth"].as_u64().map(|n| n as usize);
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.interface_hierarchy(id, depth).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -947,16 +926,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_overriders".into(),
-                description: "Get all methods in subclasses that override the given method.".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the base method.".into(), required: true }],
+                description: "Get all methods in subclasses that override the given method. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the base method.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.overriders(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -989,16 +974,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_unimplemented_methods".into(),
-                description: "Get interface methods that a class inherits but does not concretely implement (abstract-gap detection).".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the class.".into(), required: true }],
+                description: "Get interface methods that a class inherits but does not concretely implement (abstract-gap detection). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the class.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.unimplemented_interface_methods(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1009,16 +1000,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_readers_of".into(),
-                description: "Get all methods that read the given field.".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the field.".into(), required: true }],
+                description: "Get all methods that read the given field. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the field.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.readers_of(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1029,16 +1026,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_writers_of".into(),
-                description: "Get all methods that write/assign the given field.".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the field.".into(), required: true }],
+                description: "Get all methods that write/assign the given field. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the field.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.writers_of(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1049,16 +1052,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_fields_read_by".into(),
-                description: "Get all fields/variables read inside the given method.".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the method.".into(), required: true }],
+                description: "Get all fields/variables read inside the given method. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the method.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.fields_read_by(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1069,16 +1078,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_fields_written_by".into(),
-                description: "Get all fields/variables written inside the given method.".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the method.".into(), required: true }],
+                description: "Get all fields/variables written inside the given method. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the method.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.fields_written_by(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1089,16 +1104,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_unused_fields".into(),
-                description: "Get fields of a type that have no Reads or Writes edges (potentially dead).".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the type.".into(), required: true }],
+                description: "Get fields of a type that have no Reads or Writes edges (potentially dead). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the type.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.unused_fields(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1111,17 +1132,19 @@ pub fn register_graph_tools(
                 name:        "get_nodes_in_package".into(),
                 description: "Get all nodes whose qualified name starts with the given package prefix.".into(),
                 parameters:  vec![
-                    ToolParameter { name: "package_prefix".into(), kind: ParamKind::String, description: "The package prefix to filter by (e.g. 'com.example.service').".into(), required: true },
-                    ToolParameter { name: "limit".into(), kind: ParamKind::Number, description: "Maximum number of results (default: 100).".into(), required: false },
+                    ToolParameter { name: "package_prefix".into(), kind: ParamKind::String, description: "The package prefix to filter by (e.g. 'com.example.service').".into(), required: true  },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0). Use for pagination.".into(),       required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),                          required: false },
                 ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let prefix = match v["package_prefix"].as_str() { Some(p) => p, None => return r#"{"error":"missing 'package_prefix' parameter"}"#.into() };
-                let limit = v["limit"].as_u64().unwrap_or(100) as usize;
+                let offset = v["offset"].as_u64().unwrap_or(0)  as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50)  as usize;
                 let explorer = GraphExplorer::new(&g);
-                let nodes: Vec<Value> = explorer.nodes_in_package(prefix).into_iter().take(limit).map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                let nodes: Vec<Value> = explorer.nodes_in_package(prefix).into_iter().map(|id| node_summary(&g, id)).collect();
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1132,16 +1155,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_direct_imports".into(),
-                description: "Get nodes that the given node directly imports (one hop).".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the source node.".into(), required: true }],
+                description: "Get nodes that the given node directly imports (one hop). Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the source node.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.direct_imports(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1152,16 +1181,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_direct_importers".into(),
-                description: "Get nodes that directly import the given node.".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the imported node.".into(), required: true }],
+                description: "Get nodes that directly import the given node. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the imported node.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.direct_importers(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1174,18 +1209,22 @@ pub fn register_graph_tools(
                 name:        "get_import_closure".into(),
                 description: "Get the transitive import closure of a node (all resolved imports reachable from it).".into(),
                 parameters:  vec![
-                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the source node.".into(), required: true },
-                    ToolParameter { name: "depth".into(), kind: ParamKind::Number, description: "Max traversal depth (default: unlimited).".into(), required: false },
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the source node.".into(),          required: true  },
+                    ToolParameter { name: "depth".into(),          kind: ParamKind::Number, description: "Max traversal depth (default: unlimited).".into(),   required: false },
+                    ToolParameter { name: "offset".into(),         kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(),       required: false },
+                    ToolParameter { name: "limit".into(),          kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),      required: false },
                 ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
-                let depth = v["depth"].as_u64().map(|n| n as usize);
+                let depth  = v["depth"].as_u64().map(|n| n as usize);
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.import_closure(id, depth).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1196,16 +1235,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_instantiators".into(),
-                description: "Get all methods/locations that instantiate the given class.".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the class.".into(), required: true }],
+                description: "Get all methods/locations that instantiate the given class. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the class.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.instantiators(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1216,16 +1261,22 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_types_instantiated_by".into(),
-                description: "Get all classes instantiated within the given method.".into(),
-                parameters:  vec![ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the method.".into(), required: true }],
+                description: "Get all classes instantiated within the given method. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "qualified_name".into(), kind: ParamKind::String, description: "Qualified name of the method.".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let qname = match v["qualified_name"].as_str() { Some(q) => q, None => return r#"{"error":"missing 'qualified_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let id = match g.find_by_qualified(qname) { Some(id) => id, None => return format!(r#"{{"error":"node not found: {}"}}"#, qname) };
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.types_instantiated_by(id).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1238,17 +1289,19 @@ pub fn register_graph_tools(
                 name:        "get_nodes_with_attribute".into(),
                 description: "Get all nodes that carry a specific attribute/annotation (e.g. '@Override', '@Deprecated').".into(),
                 parameters:  vec![
-                    ToolParameter { name: "attribute".into(), kind: ParamKind::String, description: "The attribute string to search for.".into(), required: true },
-                    ToolParameter { name: "limit".into(), kind: ParamKind::Number, description: "Maximum number of results (default: 50).".into(), required: false },
+                    ToolParameter { name: "attribute".into(), kind: ParamKind::String, description: "The attribute string to search for.".into(),             required: true  },
+                    ToolParameter { name: "offset".into(),    kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(),           required: false },
+                    ToolParameter { name: "limit".into(),     kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(),          required: false },
                 ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let attr = match v["attribute"].as_str() { Some(a) => a, None => return r#"{"error":"missing 'attribute' parameter"}"#.into() };
-                let limit = v["limit"].as_u64().unwrap_or(50) as usize;
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let explorer = GraphExplorer::new(&g);
-                let nodes: Vec<Value> = explorer.nodes_with_attribute(attr).into_iter().take(limit).map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                let nodes: Vec<Value> = explorer.nodes_with_attribute(attr).into_iter().map(|id| node_summary(&g, id)).collect();
+                paginate(nodes, offset, limit)
             },
         );
     }
@@ -1259,15 +1312,21 @@ pub fn register_graph_tools(
         tools.register(
             ToolDefinition {
                 name:        "get_methods_throwing".into(),
-                description: "Get all methods that declare a Throws edge to the given exception type.".into(),
-                parameters:  vec![ToolParameter { name: "exception_name".into(), kind: ParamKind::String, description: "Simple or qualified exception name (e.g. 'IOException').".into(), required: true }],
+                description: "Get all methods that declare a Throws edge to the given exception type. Results are paginated (default 50). Use `offset` + check `has_more` to page through results.".into(),
+                parameters:  vec![
+                    ToolParameter { name: "exception_name".into(), kind: ParamKind::String, description: "Simple or qualified exception name (e.g. 'IOException').".into(), required: true  },
+                    ToolParameter { name: "offset".into(), kind: ParamKind::Number, description: "Number of items to skip (default: 0).".into(), required: false },
+                    ToolParameter { name: "limit".into(),  kind: ParamKind::Number, description: "Maximum items to return (default: 50).".into(), required: false },
+                ],
             },
             move |args| {
                 let v: Value = serde_json::from_str(args).unwrap_or(Value::Null);
                 let exc = match v["exception_name"].as_str() { Some(e) => e, None => return r#"{"error":"missing 'exception_name' parameter"}"#.into() };
+                let offset = v["offset"].as_u64().unwrap_or(0) as usize;
+                let limit  = v["limit"].as_u64().unwrap_or(50) as usize;
                 let explorer = GraphExplorer::new(&g);
                 let nodes: Vec<Value> = explorer.methods_throwing(exc).into_iter().map(|id| node_summary(&g, id)).collect();
-                serde_json::to_string(&nodes).unwrap_or_else(|_| "[]".into())
+                paginate(nodes, offset, limit)
             },
         );
     }

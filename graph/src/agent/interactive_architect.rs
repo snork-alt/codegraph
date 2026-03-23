@@ -16,6 +16,13 @@ Your goal is to answer architectural questions about a software project accurate
 CRITICAL RULE — you MUST include `__actionDetails__` on every tool call, no exceptions.
 Set it to a concise sentence explaining why you are calling that tool at this moment.
 
+Pagination:
+All list-returning graph tools return a paginated envelope:
+  { "items": [...], "total": N, "offset": O, "returned": K, "has_more": true/false }
+Results are capped at 50 per call by default. When `has_more` is true, call the same tool
+again with `"offset": O + K` to retrieve the next page. Keep paginating until you have the
+data you need or `has_more` is false. You may also use `"limit"` to request fewer items.
+
 Exploration strategy:
 1. Use the graph tools to gather the evidence needed to answer the question.
 2. Call multiple independent tools in a single response to explore efficiently.
@@ -40,10 +47,11 @@ pub struct InteractiveArchitectAgent {
 impl InteractiveArchitectAgent {
     /// Create a new agent that will answer `question` about `graph`.
     pub fn new(
-        graph:    DependencyGraph,
-        root:     impl Into<String>,
-        question: impl Into<String>,
-        fs:       Box<dyn FileSystem>,
+        graph:      DependencyGraph,
+        root:       impl Into<String>,
+        question:   impl Into<String>,
+        fs:         Box<dyn FileSystem>,
+        model_name: &str,
     ) -> Self {
         let root       = root.into();
         let question   = question.into();
@@ -60,14 +68,15 @@ impl InteractiveArchitectAgent {
         );
 
         Self {
-            agent: LLMAgent {
-                messages:      vec![Message::system(SYSTEM_PROMPT), Message::user(user_msg)],
-                tools_manager: tools,
-            },
+            agent: LLMAgent::new(
+                vec![Message::system(SYSTEM_PROMPT), Message::user(user_msg)],
+                tools,
+                model_name,
+            ),
         }
     }
 
-    pub fn get_request(&self) -> String {
+    pub fn get_request(&mut self) -> String {
         self.agent.get_request()
     }
 

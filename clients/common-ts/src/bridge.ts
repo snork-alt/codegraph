@@ -379,8 +379,9 @@ export interface InteractiveArchitectSession {
  * @param wasmPath  Optional override for the WASM binary location.
  */
 export async function createInteractiveArchitectSession(
-  rootPath:  string,
-  wasmPath?: string,
+  rootPath:   string,
+  modelName?: string,
+  wasmPath?:  string,
 ): Promise<InteractiveArchitectSession> {
   const resolvedWasm = wasmPath ?? process.env['CODEGRAPH_WASM'] ?? DEFAULT_WASM_PATH;
   const { memory, exports } = await createWasmInstance(resolvedWasm);
@@ -417,7 +418,7 @@ export async function createInteractiveArchitectSession(
   return {
     async ask(question: string, llm: ArchitectLLMClient): Promise<string> {
       if (!initialized) {
-        const payload = JSON.stringify({ root: rootPath, question });
+        const payload = JSON.stringify({ root: rootPath, question, model_name: modelName ?? '' });
         const { ptr, len } = writeToWasm(memory, exports, payload);
         const result = wasmIaNew(ptr, len);
         if (result !== 0) {
@@ -527,9 +528,10 @@ export async function runArchitect(
  * @param wasmPath  Optional override for the WASM binary location.
  */
 export async function createNewFeaturePMSession(
-  rootPath:  string,
-  feature:   string,
-  wasmPath?: string,
+  rootPath:   string,
+  feature:    string,
+  modelName?: string,
+  wasmPath?:  string,
 ): Promise<NewFeaturePMSession> {
   const resolvedWasm = wasmPath ?? process.env['CODEGRAPH_WASM'] ?? DEFAULT_WASM_PATH;
   const { memory, exports } = await createWasmInstance(resolvedWasm);
@@ -540,7 +542,7 @@ export async function createNewFeaturePMSession(
   const wasmNfpmProcess    = exports['wasm_nfpm_process_response']  as (ptr: number, len: number) => number;
   const wasmNfpmSubmit     = exports['wasm_nfpm_submit_answers']    as (ptr: number, len: number) => number;
 
-  const payload = JSON.stringify({ root: rootPath, feature });
+  const payload = JSON.stringify({ root: rootPath, feature, model_name: modelName ?? '' });
   const { ptr, len } = writeToWasm(memory, exports, payload);
   const initResult = wasmNfpmNew(ptr, len);
   if (initResult !== 0) {
@@ -642,6 +644,7 @@ export interface NewFeatureArchitectSession {
 export async function createNewFeatureArchitectSession(
   rootPath:    string,
   featurePath: string,
+  modelName?:  string,
   wasmPath?:   string,
 ): Promise<NewFeatureArchitectSession> {
   const resolvedWasm = wasmPath ?? process.env['CODEGRAPH_WASM'] ?? DEFAULT_WASM_PATH;
@@ -653,7 +656,7 @@ export async function createNewFeatureArchitectSession(
   const wasmNfaProcess   = exports['wasm_nfa_process_response']  as (ptr: number, len: number) => number;
   const wasmNfaSubmit    = exports['wasm_nfa_submit_answers']    as (ptr: number, len: number) => number;
 
-  const payload = JSON.stringify({ root: rootPath, feature_path: featurePath });
+  const payload = JSON.stringify({ root: rootPath, feature_path: featurePath, model_name: modelName ?? '' });
   const { ptr, len } = writeToWasm(memory, exports, payload);
   const initResult = wasmNfaNew(ptr, len);
   if (initResult !== 0) {
@@ -735,6 +738,7 @@ export async function runNewFeatureSE(
   rootPath:    string,
   featurePath: string,
   llm:         ArchitectLLMClient,
+  modelName?:  string,
   wasmPath?:   string,
 ): Promise<string> {
   const resolvedWasm = wasmPath ?? process.env['CODEGRAPH_WASM'] ?? DEFAULT_WASM_PATH;
@@ -745,7 +749,7 @@ export async function runNewFeatureSE(
   const wasmNfseGetReq   = exports['wasm_nfse_get_request']       as () => number;
   const wasmNfseProcess  = exports['wasm_nfse_process_response']  as (ptr: number, len: number) => number;
 
-  const payload = JSON.stringify({ root: rootPath, feature_path: featurePath });
+  const payload = JSON.stringify({ root: rootPath, feature_path: featurePath, model_name: modelName ?? '' });
   const { ptr, len } = writeToWasm(memory, exports, payload);
   const initResult = wasmNfseNew(ptr, len);
   if (initResult !== 0) {

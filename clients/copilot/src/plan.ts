@@ -70,7 +70,7 @@ export async function handlePlan(
   // ── Phase 1: Explore ─────────────────────────────────────────────────────
   let session;
   try {
-    session = await createNewFeatureArchitectSession(rootPath, featurePath);
+    session = await createNewFeatureArchitectSession(rootPath, featurePath, request.model.family);
   } catch (err) {
     stream.markdown(`**Error:** ${err instanceof Error ? err.message : String(err)}`);
     return;

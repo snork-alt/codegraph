@@ -305,7 +305,7 @@ pub extern "C" fn wasm_architect_new(root_ptr: *const u8, root_len: u32) -> i32 
         Err(_) => return -1,
     };
 
-    let agent = SoftwareArchitectAgent::new(graph, root, Box::new(HostFileSystem));
+    let agent = SoftwareArchitectAgent::new(graph, root, Box::new(HostFileSystem), "");
     CURRENT_ARCHITECT.with(|cell| *cell.borrow_mut() = Some(agent));
     0
 }
@@ -317,7 +317,7 @@ pub extern "C" fn wasm_architect_new(root_ptr: *const u8, root_len: u32) -> i32 
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_architect_get_request() -> u32 {
     let json = CURRENT_ARCHITECT.with(|cell| {
-        cell.borrow().as_ref().map(|a| a.get_request()).unwrap_or_default()
+        cell.borrow_mut().as_mut().map(|a| a.get_request()).unwrap_or_default()
     });
     if json.is_empty() { return 0; }
     write_wasm_response(json.as_bytes())
@@ -407,7 +407,7 @@ pub extern "C" fn wasm_architect_process_response(ptr: *const u8, len: u32) -> u
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_ia_new(ptr: *const u8, len: u32) -> i32 {
     #[derive(serde::Deserialize)]
-    struct Params { root: String, question: String }
+    struct Params { root: String, question: String, #[serde(default)] model_name: String }
 
     let json = read_wasm_string(ptr, len);
     let params: Params = match serde_json::from_str(&json) {
@@ -430,6 +430,7 @@ pub extern "C" fn wasm_ia_new(ptr: *const u8, len: u32) -> i32 {
         params.root,
         params.question,
         Box::new(HostFileSystem),
+        &params.model_name,
     );
     CURRENT_IA.with(|cell| *cell.borrow_mut() = Some(agent));
     0
@@ -459,7 +460,7 @@ pub extern "C" fn wasm_ia_continue(ptr: *const u8, len: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_ia_get_request() -> u32 {
     let json = CURRENT_IA.with(|cell| {
-        cell.borrow().as_ref().map(|a| a.get_request()).unwrap_or_default()
+        cell.borrow_mut().as_mut().map(|a| a.get_request()).unwrap_or_default()
     });
     if json.is_empty() { return 0; }
     write_wasm_response(json.as_bytes())
@@ -511,7 +512,7 @@ pub extern "C" fn wasm_pm_new(root_ptr: *const u8, root_len: u32) -> i32 {
         Ok(g)  => g,
         Err(_) => return -1,
     };
-    let agent = ProductManagerAgent::new(graph, root, Box::new(HostFileSystem));
+    let agent = ProductManagerAgent::new(graph, root, Box::new(HostFileSystem), "");
     CURRENT_PM.with(|cell| *cell.borrow_mut() = Some(agent));
     0
 }
@@ -520,7 +521,7 @@ pub extern "C" fn wasm_pm_new(root_ptr: *const u8, root_len: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_pm_get_request() -> u32 {
     let json = CURRENT_PM.with(|cell| {
-        cell.borrow().as_ref().map(|a| a.get_request()).unwrap_or_default()
+        cell.borrow_mut().as_mut().map(|a| a.get_request()).unwrap_or_default()
     });
     if json.is_empty() { return 0; }
     write_wasm_response(json.as_bytes())
@@ -576,7 +577,7 @@ pub extern "C" fn wasm_pm_process_response(ptr: *const u8, len: u32) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_nfpm_new(ptr: *const u8, len: u32) -> i32 {
     #[derive(serde::Deserialize)]
-    struct Params { root: String, feature: String }
+    struct Params { root: String, feature: String, #[serde(default)] model_name: String }
 
     let json = read_wasm_string(ptr, len);
     let params: Params = match serde_json::from_str(&json) {
@@ -599,6 +600,7 @@ pub extern "C" fn wasm_nfpm_new(ptr: *const u8, len: u32) -> i32 {
         params.root,
         params.feature,
         Box::new(HostFileSystem),
+        &params.model_name,
     );
     CURRENT_NFPM.with(|cell| *cell.borrow_mut() = Some(agent));
     0
@@ -608,7 +610,7 @@ pub extern "C" fn wasm_nfpm_new(ptr: *const u8, len: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_nfpm_get_request() -> u32 {
     let json = CURRENT_NFPM.with(|cell| {
-        cell.borrow().as_ref().map(|a| a.get_request()).unwrap_or_default()
+        cell.borrow_mut().as_mut().map(|a| a.get_request()).unwrap_or_default()
     });
     if json.is_empty() { return 0; }
     write_wasm_response(json.as_bytes())
@@ -685,7 +687,7 @@ pub extern "C" fn wasm_nfpm_submit_answers(ptr: *const u8, len: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_nfa_new(ptr: *const u8, len: u32) -> i32 {
     #[derive(serde::Deserialize)]
-    struct Params { root: String, feature_path: String }
+    struct Params { root: String, feature_path: String, #[serde(default)] model_name: String }
 
     let json = read_wasm_string(ptr, len);
     let params: Params = match serde_json::from_str(&json) {
@@ -708,6 +710,7 @@ pub extern "C" fn wasm_nfa_new(ptr: *const u8, len: u32) -> i32 {
         params.root,
         params.feature_path,
         Box::new(HostFileSystem),
+        &params.model_name,
     );
     CURRENT_NFA.with(|cell| *cell.borrow_mut() = Some(agent));
     0
@@ -717,7 +720,7 @@ pub extern "C" fn wasm_nfa_new(ptr: *const u8, len: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_nfa_get_request() -> u32 {
     let json = CURRENT_NFA.with(|cell| {
-        cell.borrow().as_ref().map(|a| a.get_request()).unwrap_or_default()
+        cell.borrow_mut().as_mut().map(|a| a.get_request()).unwrap_or_default()
     });
     if json.is_empty() { return 0; }
     write_wasm_response(json.as_bytes())
@@ -783,7 +786,7 @@ pub extern "C" fn wasm_nfa_submit_answers(ptr: *const u8, len: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_nfse_new(ptr: *const u8, len: u32) -> i32 {
     #[derive(serde::Deserialize)]
-    struct Params { root: String, feature_path: String }
+    struct Params { root: String, feature_path: String, #[serde(default)] model_name: String }
 
     let json = read_wasm_string(ptr, len);
     let params: Params = match serde_json::from_str(&json) {
@@ -806,6 +809,7 @@ pub extern "C" fn wasm_nfse_new(ptr: *const u8, len: u32) -> i32 {
         params.root,
         params.feature_path,
         Box::new(HostFileSystem),
+        &params.model_name,
     );
     CURRENT_NFSE.with(|cell| *cell.borrow_mut() = Some(agent));
     0
@@ -815,7 +819,7 @@ pub extern "C" fn wasm_nfse_new(ptr: *const u8, len: u32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_nfse_get_request() -> u32 {
     let json = CURRENT_NFSE.with(|cell| {
-        cell.borrow().as_ref().map(|a| a.get_request()).unwrap_or_default()
+        cell.borrow_mut().as_mut().map(|a| a.get_request()).unwrap_or_default()
     });
     if json.is_empty() { return 0; }
     write_wasm_response(json.as_bytes())

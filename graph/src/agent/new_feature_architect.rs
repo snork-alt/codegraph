@@ -17,6 +17,13 @@ Your goal is to read a feature specification and produce a detailed, actionable 
 
 CRITICAL RULE — you MUST include `__actionDetails__` on every tool call, no exceptions.
 
+Pagination:
+All list-returning graph tools return a paginated envelope:
+  { "items": [...], "total": N, "offset": O, "returned": K, "has_more": true/false }
+Results are capped at 50 per call by default. When `has_more` is true, call the same tool
+again with `"offset": O + K` to retrieve the next page. Keep paginating until you have the
+data you need or `has_more` is false. You may also use `"limit"` to request fewer items.
+
 ── Phase 1: Exploration ──────────────────────────────────────────────────────
 1. Call `read_feature_spec` FIRST to read the feature specification.
 2. Call `read_architecture` to understand the overall system design.
@@ -91,6 +98,7 @@ impl NewFeatureArchitectAgent {
         root:         impl Into<String>,
         feature_path: impl Into<String>,
         fs:           Box<dyn FileSystem>,
+        model_name:   &str,
     ) -> Self {
         let root         = root.into();
         let feature_path = feature_path.into();
@@ -230,15 +238,16 @@ impl NewFeatureArchitectAgent {
         );
 
         Self {
-            agent: LLMAgent {
-                messages:      vec![Message::system(SYSTEM_PROMPT), Message::user(user_msg)],
-                tools_manager: tools,
-            },
+            agent: LLMAgent::new(
+                vec![Message::system(SYSTEM_PROMPT), Message::user(user_msg)],
+                tools,
+                model_name,
+            ),
             feature_path,
         }
     }
 
-    pub fn get_request(&self) -> String {
+    pub fn get_request(&mut self) -> String {
         self.agent.get_request()
     }
 

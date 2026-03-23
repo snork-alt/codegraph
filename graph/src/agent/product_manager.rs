@@ -18,6 +18,13 @@ CRITICAL RULE — you MUST include `__actionDetails__` on every tool call, no ex
 Set it to a concise sentence explaining why you are calling that tool at this moment.
 If you omit `__actionDetails__` from any tool call, your response is invalid.
 
+Pagination:
+All list-returning graph tools return a paginated envelope:
+  { "items": [...], "total": N, "offset": O, "returned": K, "has_more": true/false }
+Results are capped at 50 per call by default. When `has_more` is true, call the same tool
+again with `"offset": O + K` to retrieve the next page. Keep paginating until you have the
+data you need or `has_more` is false. You may also use `"limit"` to request fewer items.
+
 Exploration strategy — follow these steps in order:
 1. Call `read_architecture` FIRST. The architecture document is your primary source of truth.
 2. Use the graph tools (`list_files`, `find_nodes_by_kind`, `get_file_summary`, `get_node_details`,
@@ -57,7 +64,7 @@ pub struct ProductManagerAgent {
 impl ProductManagerAgent {
     /// Create a new agent that will analyse `graph` and the existing
     /// `architecture.md` to produce `specs.md`.
-    pub fn new(graph: DependencyGraph, root: impl Into<String>, fs: Box<dyn FileSystem>) -> Self {
+    pub fn new(graph: DependencyGraph, root: impl Into<String>, fs: Box<dyn FileSystem>, model_name: &str) -> Self {
         let root       = root.into();
         let file_count = graph.by_file.len();
         let node_count = graph.nodes.len();
@@ -107,15 +114,16 @@ impl ProductManagerAgent {
         );
 
         Self {
-            agent: LLMAgent {
-                messages:      vec![Message::system(SYSTEM_PROMPT), Message::user(user_msg)],
-                tools_manager: tools,
-            },
+            agent: LLMAgent::new(
+                vec![Message::system(SYSTEM_PROMPT), Message::user(user_msg)],
+                tools,
+                model_name,
+            ),
             root,
         }
     }
 
-    pub fn get_request(&self) -> String {
+    pub fn get_request(&mut self) -> String {
         self.agent.get_request()
     }
 

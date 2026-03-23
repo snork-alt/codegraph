@@ -48,7 +48,7 @@ export async function handleSpecify(
 
   let session;
   try {
-    session = await createNewFeaturePMSession(rootPath, feature);
+    session = await createNewFeaturePMSession(rootPath, feature, request.model.family);
   } catch (err) {
     stream.markdown(`**Error:** ${err instanceof Error ? err.message : String(err)}`);
     return;

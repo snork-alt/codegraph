@@ -59,7 +59,7 @@ export async function handleAsk(
 
   let session = activeSessions.get(rootPath);
   if (!session || !isFollowUp) {
-    session = await createInteractiveArchitectSession(rootPath);
+    session = await createInteractiveArchitectSession(rootPath, request.model.family);
     activeSessions.set(rootPath, session);
   }
 

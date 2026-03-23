@@ -40,6 +40,17 @@ pub struct Message {
 }
 
 impl Message {
+    /// Rough character count used for memory-size estimation.
+    /// Tool call names and arguments are included.
+    pub fn char_count(&self) -> usize {
+        let content_len = self.content.as_deref().map_or(0, str::len);
+        let tool_calls_len: usize = self.tool_calls
+            .iter()
+            .map(|tc| tc.name.len() + tc.arguments.len())
+            .sum();
+        content_len + tool_calls_len
+    }
+
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role:         Role::System,

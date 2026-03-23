@@ -18,6 +18,13 @@ CRITICAL RULE — you MUST include `__actionDetails__` on every tool call, no ex
 
 You work in two phases:
 
+Pagination:
+All list-returning graph tools return a paginated envelope:
+  { "items": [...], "total": N, "offset": O, "returned": K, "has_more": true/false }
+Results are capped at 50 per call by default. When `has_more` is true, call the same tool
+again with `"offset": O + K` to retrieve the next page. Keep paginating until you have the
+data you need or `has_more` is false. You may also use `"limit"` to request fewer items.
+
 ── Phase 1: Exploration ──────────────────────────────────────────────────────
 Explore the codebase to understand how the requested feature fits the project:
 1. Call `read_architecture` first if it exists.
@@ -82,10 +89,11 @@ pub struct NewFeatureProductManagerAgent {
 
 impl NewFeatureProductManagerAgent {
     pub fn new(
-        graph:   DependencyGraph,
-        root:    impl Into<String>,
-        feature: impl Into<String>,
-        fs:      Box<dyn FileSystem>,
+        graph:      DependencyGraph,
+        root:       impl Into<String>,
+        feature:    impl Into<String>,
+        fs:         Box<dyn FileSystem>,
+        model_name: &str,
     ) -> Self {
         let root       = root.into();
         let feature    = feature.into();
@@ -195,15 +203,16 @@ impl NewFeatureProductManagerAgent {
         );
 
         Self {
-            agent: LLMAgent {
-                messages:      vec![Message::system(SYSTEM_PROMPT), Message::user(user_msg)],
-                tools_manager: tools,
-            },
+            agent: LLMAgent::new(
+                vec![Message::system(SYSTEM_PROMPT), Message::user(user_msg)],
+                tools,
+                model_name,
+            ),
             root,
         }
     }
 
-    pub fn get_request(&self) -> String {
+    pub fn get_request(&mut self) -> String {
         self.agent.get_request()
     }
 

@@ -82,7 +82,7 @@ export async function handleTasks(
 
   let tasks: string;
   try {
-    tasks = await runNewFeatureSE(rootPath, featurePath, llm);
+    tasks = await runNewFeatureSE(rootPath, featurePath, llm, request.model.family);
   } catch (err) {
     stream.markdown(`\n**Error:** ${err instanceof Error ? err.message : String(err)}`);
     return;
