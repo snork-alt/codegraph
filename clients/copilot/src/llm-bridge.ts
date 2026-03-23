@@ -39,7 +39,8 @@ interface OAIRequest {
 function toVsCodeMessages(messages: OAIMessage[]): vscode.LanguageModelChatMessage[] {
   const result: vscode.LanguageModelChatMessage[] = [];
 
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
     switch (msg.role) {
       case 'system':
         // vscode.lm has no system role — prepend as a labelled User message.
@@ -73,15 +74,26 @@ function toVsCodeMessages(messages: OAIMessage[]): vscode.LanguageModelChatMessa
         break;
       }
 
-      case 'tool':
-        // Tool results arrive as User messages carrying a ToolResultPart.
-        result.push(vscode.LanguageModelChatMessage.User([
-          new vscode.LanguageModelToolResultPart(
-            msg.tool_call_id ?? '',
-            [new vscode.LanguageModelTextPart(msg.content ?? '')],
-          ),
-        ]));
+      case 'tool': {
+        // Anthropic requires ALL tool results for one assistant turn to be in
+        // a SINGLE user message.  Collect every consecutive tool message here
+        // so they become one User message with multiple ToolResultParts rather
+        // than separate messages (which would trigger a 400 "unexpected
+        // tool_use_id" error because only the first result would immediately
+        // follow the assistant tool_use block).
+        const parts: vscode.LanguageModelToolResultPart[] = [];
+        while (i < messages.length && messages[i].role === 'tool') {
+          const toolMsg = messages[i];
+          parts.push(new vscode.LanguageModelToolResultPart(
+            toolMsg.tool_call_id ?? '',
+            [new vscode.LanguageModelTextPart(toolMsg.content ?? '')],
+          ));
+          i++;
+        }
+        i--; // outer loop will increment past the last consumed index
+        result.push(vscode.LanguageModelChatMessage.User(parts));
         break;
+      }
     }
   }
 
