@@ -14,6 +14,7 @@ import { createCopilotLLMClient, createCopilotEnrichmentClient } from './llm-bri
  */
 export async function handleAnalyze(
   request: vscode.ChatRequest,
+  _context: vscode.ChatContext,
   stream:  vscode.ChatResponseStream,
   token:   vscode.CancellationToken,
 ): Promise<void> {
@@ -36,13 +37,13 @@ export async function handleAnalyze(
       const concurrency   = vscode.workspace.getConfiguration('codegraph').get<number>('enrichmentConcurrency', 5);
       process.env['OPENAI_CONCURRENCY'] = String(concurrency);
       stream.markdown(`Enriching descriptions for ${entityCount} entities across ${session.tasks.length} file(s) (concurrency: ${concurrency})…\n\n`);
-      const descriptions = await enrichDescriptions(session.tasks, enrichClient, (file, index, total) => {
+      const payload = await enrichDescriptions(session.tasks, enrichClient, (file, index, total) => {
         const name = file.split('/').pop() ?? file;
         stream.markdown(`- [${index}/${total}] \`${name}\`\n`);
       });
-      session.applyDescriptions(descriptions);
+      session.applyEnrichment(payload);
     } else {
-      session.applyDescriptions({});
+      session.applyEnrichment({ descriptions: {}, is_test: {} });
     }
     stream.markdown('✓ `graph.yml` saved.\n\n');
 
@@ -54,8 +55,8 @@ export async function handleAnalyze(
     const architectLLM = createCopilotLLMClient(
       request.model,
       token,
-      (_toolName, actionDetails) => {
-        if (actionDetails) { stream.markdown(`- ${actionDetails}\n`); }
+      (toolName, actionDetails) => {
+        stream.markdown(`- ${actionDetails || toolName}\n`);
       },
     );
 
@@ -73,8 +74,8 @@ export async function handleAnalyze(
     const pmLLM = createCopilotLLMClient(
       request.model,
       token,
-      (_toolName, actionDetails) => {
-        if (actionDetails) { stream.markdown(`- ${actionDetails}\n`); }
+      (toolName, actionDetails) => {
+        stream.markdown(`- ${actionDetails || toolName}\n`);
       },
     );
 

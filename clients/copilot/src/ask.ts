@@ -1,8 +1,17 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
-import { runInteractiveArchitect } from '@codegraph/common-ts';
+import { createInteractiveArchitectSession, InteractiveArchitectSession } from '@codegraph/common-ts';
 import { createCopilotLLMClient } from './llm-bridge';
+
+// ─── Session cache ────────────────────────────────────────────────────────────
+
+/**
+ * One live WASM session per workspace root.  The session is reused for
+ * follow-up questions in the same chat thread (context.history is non-empty)
+ * and discarded when a fresh conversation starts.
+ */
+const activeSessions = new Map<string, InteractiveArchitectSession>();
 
 /**
  * Handle a free-form architectural question directed at @codegraph.
@@ -10,9 +19,13 @@ import { createCopilotLLMClient } from './llm-bridge';
  * Requires `.codegraph/graph.yml` to exist in the workspace root.
  * Streams tool action details into the chat as the agent explores,
  * then streams the final answer.
+ *
+ * Prior conversation turns from the same @codegraph session are prepended
+ * to the question so the agent has full context for follow-up questions.
  */
 export async function handleAsk(
   request: vscode.ChatRequest,
+  context: vscode.ChatContext,
   stream:  vscode.ChatResponseStream,
   token:   vscode.CancellationToken,
 ): Promise<void> {
@@ -38,13 +51,25 @@ export async function handleAsk(
     return;
   }
 
+  // Reuse the live WASM session if the user is continuing the same thread,
+  // start a fresh one when this is the first message in a new conversation.
+  const isFollowUp = context.history.some(
+    t => t instanceof vscode.ChatRequestTurn && !t.command,
+  );
+
+  let session = activeSessions.get(rootPath);
+  if (!session || !isFollowUp) {
+    session = await createInteractiveArchitectSession(rootPath);
+    activeSessions.set(rootPath, session);
+  }
+
   let answerStarted = false;
 
   const llm = createCopilotLLMClient(
     request.model,
     token,
-    (_toolName, actionDetails) => {
-      if (actionDetails) { stream.markdown(`- ${actionDetails}\n`); }
+    (toolName, actionDetails) => {
+      stream.markdown(`- ${actionDetails || toolName}\n`);
     },
     (fragment) => {
       if (!answerStarted) {
@@ -56,7 +81,7 @@ export async function handleAsk(
   );
 
   try {
-    await runInteractiveArchitect(rootPath, question, llm);
+    await session.ask(question, llm);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     stream.markdown(`**Error:** ${msg}`);
@@ -67,3 +92,4 @@ export async function handleAsk(
     stream.markdown('The agent could not produce an answer.');
   }
 }
+

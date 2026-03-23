@@ -348,72 +348,94 @@ export async function runProductManager(
   }
 }
 
+// ─── Interactive Architect session ───────────────────────────────────────────
+
 /**
- * Load the persisted `graph.yml` from `<rootPath>/.codegraph/graph.yml`,
- * create an {@link InteractiveArchitectAgent} inside WASM, and drive it to
- * completion by calling `llm` in a loop.
+ * A persistent session for the {@link InteractiveArchitectAgent}.
  *
- * Returns the agent's final answer as a string (not written to any file).
+ * The underlying WASM instance — and the agent's full tool-call history — is
+ * kept alive across calls to `ask`, so follow-up questions benefit from
+ * everything the agent already explored.
  *
- * @param rootPath  Absolute path to the project root (must contain `.codegraph/graph.yml`).
- * @param question  The architectural question to answer.
- * @param llm       LLM callback (same type as for `runArchitect`).
+ * Create one session per chat thread with
+ * {@link createInteractiveArchitectSession}.  Start a new session when the
+ * user begins a fresh conversation.
+ */
+export interface InteractiveArchitectSession {
+  /**
+   * Ask a question (or follow-up).  On the first call the agent is
+   * initialised; on subsequent calls the question is appended to the
+   * existing conversation via `wasm_ia_continue`.
+   */
+  ask(question: string, llm: ArchitectLLMClient): Promise<string>;
+}
+
+/**
+ * Create a persistent {@link InteractiveArchitectSession} for `rootPath`.
+ *
+ * The WASM instance is initialised lazily on the first `ask` call.
+ *
+ * @param rootPath  Absolute path to the project root.
  * @param wasmPath  Optional override for the WASM binary location.
  */
-export async function runInteractiveArchitect(
+export async function createInteractiveArchitectSession(
   rootPath:  string,
-  question:  string,
-  llm:       ArchitectLLMClient,
   wasmPath?: string,
-): Promise<string> {
+): Promise<InteractiveArchitectSession> {
   const resolvedWasm = wasmPath ?? process.env['CODEGRAPH_WASM'] ?? DEFAULT_WASM_PATH;
   const { memory, exports } = await createWasmInstance(resolvedWasm);
 
-  const wasmResponsePtr = exports['wasm_response_ptr']         as () => number;
-  const wasmIaNew       = exports['wasm_ia_new']               as (ptr: number, len: number) => number;
-  const wasmIaGetReq    = exports['wasm_ia_get_request']       as () => number;
-  const wasmIaProcess   = exports['wasm_ia_process_response']  as (ptr: number, len: number) => number;
+  const wasmResponsePtr  = exports['wasm_response_ptr']          as () => number;
+  const wasmIaNew        = exports['wasm_ia_new']                as (ptr: number, len: number) => number;
+  const wasmIaContinue   = exports['wasm_ia_continue']           as (ptr: number, len: number) => number;
+  const wasmIaGetReq     = exports['wasm_ia_get_request']        as () => number;
+  const wasmIaProcess    = exports['wasm_ia_process_response']   as (ptr: number, len: number) => number;
 
-  const payload = JSON.stringify({ root: rootPath, question });
-  const { ptr, len } = writeToWasm(memory, exports, payload);
-  const initResult = wasmIaNew(ptr, len);
-  if (initResult !== 0) {
-    throw new Error(
-      `Failed to initialise InteractiveArchitectAgent. ` +
-      `Make sure '${rootPath}/.codegraph/graph.yml' exists (run '@codegraph /analyze' first).`,
-    );
-  }
+  let initialized = false;
 
-  let turn = 0;
-  for (;;) {
-    turn++;
+  async function driveLoop(llm: ArchitectLLMClient): Promise<string> {
+    for (;;) {
+      const reqLen = wasmIaGetReq();
+      if (reqLen === 0) {
+        throw new Error('Interactive architect returned an empty request — this is a bug.');
+      }
+      const reqJson      = readString(memory, wasmResponsePtr(), reqLen);
+      const responseJson = await llm(reqJson);
+      const { ptr: rPtr, len: rLen } = writeToWasm(memory, exports, responseJson);
+      const actionLen    = wasmIaProcess(rPtr, rLen);
+      const action: ArchitectAction = JSON.parse(readString(memory, wasmResponsePtr(), actionLen));
 
-    const reqLen = wasmIaGetReq();
-    if (reqLen === 0) {
-      throw new Error('Interactive architect returned an empty request — this is a bug.');
-    }
-    const reqPtr  = wasmResponsePtr();
-    const reqJson = readString(memory, reqPtr, reqLen);
-
-    const responseJson = await llm(reqJson);
-
-    const { ptr: respPtr, len: respLen } = writeToWasm(memory, exports, responseJson);
-    const actionLen = wasmIaProcess(respPtr, respLen);
-    const actionPtr = wasmResponsePtr();
-    const action: ArchitectAction = JSON.parse(readString(memory, actionPtr, actionLen));
-
-    switch (action.action) {
-      case 'continue':
-        continue;
-      case 'message':
-        return action.content ?? '';
-      case 'stop':
-        return '';
-      case 'error':
-        throw new Error(`Interactive architect error: ${action.content ?? 'unknown'}`);
+      switch (action.action) {
+        case 'continue': continue;
+        case 'message':  return action.content ?? '';
+        case 'stop':     return '';
+        case 'error':    throw new Error(`Interactive architect error: ${action.content ?? 'unknown'}`);
+      }
     }
   }
+
+  return {
+    async ask(question: string, llm: ArchitectLLMClient): Promise<string> {
+      if (!initialized) {
+        const payload = JSON.stringify({ root: rootPath, question });
+        const { ptr, len } = writeToWasm(memory, exports, payload);
+        const result = wasmIaNew(ptr, len);
+        if (result !== 0) {
+          throw new Error(
+            `Failed to initialise InteractiveArchitectAgent. ` +
+            `Make sure '${rootPath}/.codegraph/graph.yml' exists (run '@codegraph /analyze' first).`,
+          );
+        }
+        initialized = true;
+      } else {
+        const { ptr, len } = writeToWasm(memory, exports, question);
+        wasmIaContinue(ptr, len);
+      }
+      return driveLoop(llm);
+    },
+  };
 }
+
 
 /**
  * Load the persisted `graph.yml` from `<rootPath>/.codegraph/graph.yml`,

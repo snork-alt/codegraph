@@ -1,7 +1,7 @@
 import * as fs   from 'node:fs';
 import * as path from 'node:path';
 
-import { indexGraph, DescriptionTask } from './bridge';
+import { indexGraph, DescriptionTask, EnrichmentPayload } from './bridge';
 
 // ─── LLM client type ──────────────────────────────────────────────────────────
 
@@ -266,7 +266,7 @@ export async function enrichDescriptions(
   tasks:    DescriptionTask[],
   llm:      LLMClient,
   onFile?:  (file: string, index: number, total: number) => void,
-): Promise<Record<string, string>> {
+): Promise<EnrichmentPayload> {
   const limit     = parseInt(process.env['OPENAI_CONCURRENCY'] ?? String(DEFAULT_CONCURRENCY), 10);
   const batchSize = parseInt(process.env['OPENAI_BATCH_SIZE']  ?? String(DEFAULT_BATCH_SIZE),  10);
 
@@ -282,9 +282,10 @@ export async function enrichDescriptions(
     return enrichFile(t, llm, i + 1, batched.length);
   });
   const results = await withConcurrency(fns, limit);
-  const merged: Record<string, string> = {};
+  const merged: EnrichmentPayload = { descriptions: {}, is_test: {} };
   for (const result of results) {
-    Object.assign(merged, result);
+    Object.assign(merged.descriptions, result.descriptions);
+    Object.assign(merged.is_test, result.isTest);
   }
   return merged;
 }
@@ -322,23 +323,23 @@ export async function runIndex(
     const model     = process.env['OPENAI_MODEL'] ?? 'gpt-4o-mini';
     console.log(`Enriching ${allKeys.size} entities across ${fileCount} file(s) using ${model} …`);
 
-    const descriptions = await enrichDescriptions(session.tasks, llm);
-    const described    = Object.values(descriptions).filter(v => v.trim() !== '').length;
+    const payload  = await enrichDescriptions(session.tasks, llm);
+    const described = Object.values(payload.descriptions).filter(v => v.trim() !== '').length;
 
-    const missing = [...allKeys].filter(k => !descriptions[k] || descriptions[k].trim() === '');
+    const missing = [...allKeys].filter(k => !payload.descriptions[k] || payload.descriptions[k].trim() === '');
     if (missing.length > 0) {
       console.warn(`  ${missing.length} entities could not be described:`);
       for (const qname of missing.slice(0, 20)) console.warn(`    - ${qname}`);
       if (missing.length > 20) console.warn(`    … and ${missing.length - 20} more`);
     }
 
-    session.applyDescriptions(descriptions);
+    session.applyEnrichment(payload);
     console.log(`  ${described}/${allKeys.size} entities described`);
   } else {
     if (session.tasks.length > 0 && !llm) {
       console.log(`Skipping description enrichment (--descriptions not set)`);
     }
-    session.applyDescriptions({});
+    session.applyEnrichment({ descriptions: {}, is_test: {} });
   }
 
   console.log(`✓ Graph written to ${absTarget}/.codegraph/graph.yml`);

@@ -74,4 +74,11 @@ impl InteractiveArchitectAgent {
     pub fn process_response(&mut self, response_json: &str) -> AgentAction {
         self.agent.process_response(response_json)
     }
+
+    /// Append a follow-up question as a new user message, continuing the same
+    /// conversation.  The agent retains the full tool-call history from prior
+    /// turns, so it does not need to re-explore the codebase.
+    pub fn continue_with(&mut self, question: impl Into<String>) {
+        self.agent.messages.push(Message::user(question.into()));
+    }
 }

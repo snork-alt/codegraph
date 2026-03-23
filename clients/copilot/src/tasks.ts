@@ -16,6 +16,7 @@ import { stripPreamble } from './utils';
  */
 export async function handleTasks(
   request: vscode.ChatRequest,
+  _context: vscode.ChatContext,
   stream:  vscode.ChatResponseStream,
   token:   vscode.CancellationToken,
 ): Promise<void> {
@@ -76,7 +77,7 @@ export async function handleTasks(
   // ── Run SE agent ─────────────────────────────────────────────────────────
   const llm = createCopilotLLMClient(
     request.model, token,
-    (_tool, details) => { if (details) stream.markdown(`- ${details}\n`); },
+    (tool, details) => { stream.markdown(`- ${details || tool}\n`); },
   );
 
   let tasks: string;

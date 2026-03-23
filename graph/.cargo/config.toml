@@ -17,6 +17,7 @@ rustflags = [
   "-C", "link-arg=-Wl,--export=wasm_pm_get_request",
   "-C", "link-arg=-Wl,--export=wasm_pm_process_response",
   "-C", "link-arg=-Wl,--export=wasm_ia_new",
+  "-C", "link-arg=-Wl,--export=wasm_ia_continue",
   "-C", "link-arg=-Wl,--export=wasm_ia_get_request",
   "-C", "link-arg=-Wl,--export=wasm_ia_process_response",
   "-C", "link-arg=-Wl,--export=wasm_nfpm_new",

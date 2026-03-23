@@ -24,29 +24,29 @@ export function deactivate(): void { /* nothing to clean up */ }
 
 async function handler(
   request: vscode.ChatRequest,
-  _context: vscode.ChatContext,
+  context: vscode.ChatContext,
   stream:  vscode.ChatResponseStream,
   token:   vscode.CancellationToken,
 ): Promise<vscode.ChatResult> {
   switch (request.command) {
     case 'analyze':
-      await handleAnalyze(request, stream, token);
+      await handleAnalyze(request, context, stream, token);
       break;
 
     case 'specify':
-      await handleSpecify(request, stream, token);
+      await handleSpecify(request, context, stream, token);
       break;
 
     case 'plan':
-      await handlePlan(request, stream, token);
+      await handlePlan(request, context, stream, token);
       break;
 
     case 'tasks':
-      await handleTasks(request, stream, token);
+      await handleTasks(request, context, stream, token);
       break;
 
     default:
-      await handleAsk(request, stream, token);
+      await handleAsk(request, context, stream, token);
   }
 
   return {};

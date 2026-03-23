@@ -435,6 +435,26 @@ pub extern "C" fn wasm_ia_new(ptr: *const u8, len: u32) -> i32 {
     0
 }
 
+/// Append a follow-up question to the existing [`InteractiveArchitectAgent`].
+///
+/// TypeScript must write the UTF-8 question string into the WASM buffer first:
+/// 1. `ptr = fs_response_reserve(question_len)`
+/// 2. `memory[ptr..] = utf8_question`
+/// 3. `wasm_ia_continue(ptr, question_len)`
+///
+/// Returns 0 on success, -1 if no agent is active (call `wasm_ia_new` first).
+#[unsafe(no_mangle)]
+pub extern "C" fn wasm_ia_continue(ptr: *const u8, len: u32) -> i32 {
+    let question = read_wasm_string(ptr, len);
+    CURRENT_IA.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        match borrow.as_mut() {
+            None        => -1,
+            Some(agent) => { agent.continue_with(question); 0 }
+        }
+    })
+}
+
 /// Returns the byte length of the IA request JSON (0 if no agent active).
 #[unsafe(no_mangle)]
 pub extern "C" fn wasm_ia_get_request() -> u32 {

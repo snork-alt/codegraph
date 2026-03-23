@@ -16,6 +16,7 @@ import { stripPreamble } from './utils';
  */
 export async function handlePlan(
   request: vscode.ChatRequest,
+  _context: vscode.ChatContext,
   stream:  vscode.ChatResponseStream,
   token:   vscode.CancellationToken,
 ): Promise<void> {
@@ -77,7 +78,7 @@ export async function handlePlan(
 
   const exploreLLM = createCopilotLLMClient(
     request.model, token,
-    (_tool, details) => { if (details) stream.markdown(`- ${details}\n`); },
+    (tool, details) => { stream.markdown(`- ${details || tool}\n`); },
   );
 
   let questions;
@@ -109,7 +110,7 @@ export async function handlePlan(
   // ── Phase 3: Generate plan ────────────────────────────────────────────────
   const planLLM = createCopilotLLMClient(
     request.model, token,
-    (_tool, details) => { if (details) stream.markdown(`- ${details}\n`); },
+    (tool, details) => { stream.markdown(`- ${details || tool}\n`); },
   );
 
   let plan: string;
