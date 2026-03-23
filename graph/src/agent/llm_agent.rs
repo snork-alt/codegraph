@@ -184,7 +184,8 @@ impl LLMAgent {
                 // The model uses this tool to signal it wants clarification
                 // rather than text-heuristic detection.
                 if let Some(aq) = raw_calls.iter().find(|tc| tc.function.name == "ask_questions") {
-                    let args = aq.function.arguments.clone();
+                    let args  = aq.function.arguments.clone();
+                    let aq_id = aq.id.clone();
 
                     // Record the assistant's tool-call in history so that when
                     // phase 2 starts the model can see what it asked.
@@ -199,6 +200,12 @@ impl LLMAgent {
                         tool_calls,
                         tool_call_id: None,
                     });
+
+                    // Anthropic (and OpenAI) require every tool_use block to be
+                    // immediately followed by a tool_result.  Add a synthetic
+                    // result so phase 2 doesn't get a 400 "tool_use ids were
+                    // found without tool_result blocks" error.
+                    self.messages.push(Message::tool_result(aq_id, "Questions received."));
 
                     return AgentAction::AskQuestions(args);
                 }
