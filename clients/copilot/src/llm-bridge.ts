@@ -54,44 +54,41 @@ function toVsCodeMessages(messages: OAIMessage[]): vscode.LanguageModelChatMessa
         break;
 
       case 'assistant': {
-        const parts: Array<vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart> = [];
-
+        // Represent tool calls as plain text rather than LanguageModelToolCallPart.
+        //
+        // Using LanguageModelToolCallPart in history causes "role tool" 400
+        // errors because the Copilot proxy validates that every tool-result
+        // message immediately follows an assistant message with tool_calls,
+        // and it tracks that linkage by its own internal IDs — not by the
+        // synthetic IDs we generate for text-parsed tool calls.  Plain text
+        // sidesteps all of that validation entirely.
+        const textParts: string[] = [];
         if (msg.content) {
-          parts.push(new vscode.LanguageModelTextPart(msg.content));
+          textParts.push(msg.content);
         }
-
         for (const tc of msg.tool_calls ?? []) {
-          let input: unknown;
-          try { input = JSON.parse(tc.function.arguments); } catch { input = {}; }
-          parts.push(new vscode.LanguageModelToolCallPart(
-            tc.id,
-            tc.function.name,
-            input as Record<string, unknown>,
-          ));
+          textParts.push(`<function=${tc.function.name}>\n${tc.function.arguments}\n</function>`);
         }
-
-        result.push(vscode.LanguageModelChatMessage.Assistant(parts));
+        result.push(vscode.LanguageModelChatMessage.Assistant(
+          textParts.join('\n').trim() || ' ',
+        ));
         break;
       }
 
       case 'tool': {
-        // Anthropic requires ALL tool results for one assistant turn to be in
-        // a SINGLE user message.  Collect every consecutive tool message here
-        // so they become one User message with multiple ToolResultParts rather
-        // than separate messages (which would trigger a 400 "unexpected
-        // tool_use_id" error because only the first result would immediately
-        // follow the assistant tool_use block).
-        const parts: vscode.LanguageModelToolResultPart[] = [];
+        // Collect all consecutive tool results into one plain User text message.
+        //
+        // Using LanguageModelToolResultPart causes "role tool" 400 errors for
+        // the same reason as above.  Plain text avoids any ID-matching
+        // validation by the proxy or VS Code itself.
+        const resultParts: string[] = [];
         while (i < messages.length && messages[i].role === 'tool') {
-          const toolMsg = messages[i];
-          parts.push(new vscode.LanguageModelToolResultPart(
-            toolMsg.tool_call_id ?? '',
-            [new vscode.LanguageModelTextPart(toolMsg.content ?? '')],
-          ));
+          const m = messages[i];
+          resultParts.push(`<tool_result id="${m.tool_call_id}">\n${m.content ?? ''}\n</tool_result>`);
           i++;
         }
         i--; // outer loop will increment past the last consumed index
-        result.push(vscode.LanguageModelChatMessage.User(parts));
+        result.push(vscode.LanguageModelChatMessage.User(resultParts.join('\n')));
         break;
       }
     }
